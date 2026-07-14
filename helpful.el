@@ -1614,13 +1614,13 @@ buffer."
           ;; Look up this command in the keymap, its parent and the
           ;; global map. We need to include the global map to find
           ;; remapped commands.
-          (where-is-internal command-sym keymap nil t))
+          (where-is-internal command-sym keymap))
          ;; Look up this command in the parent keymap.
          (parent-keymap (keymap-parent keymap))
          (parent-keycodes
           (when parent-keymap
             (where-is-internal
-             command-sym (list parent-keymap) nil t)))
+             command-sym (list parent-keymap))))
          ;; Look up this command in the global map.
          (global-keycodes
           (unless (eq keymap global-map)
@@ -1650,7 +1650,7 @@ same bindings as `global-map'."
   (let* ((keymap-syms (helpful--all-keymap-syms))
          (keymap-sym-vals (mapcar #'symbol-value keymap-syms))
          (global-keycodes (where-is-internal
-                           command-sym (list global-map) nil t))
+                           command-sym (list global-map)))
          matching-keymaps)
     ;; Look for this command in all keymaps bound to variables.
     (mapc
