@@ -1,9 +1,11 @@
 ;;; helpful.el --- A better *help* buffer            -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 Henrik Lissner
 ;; Copyright (C) 2017-2022  Wilfred Hughes
 
+;; Maintainer: Henrik Lissner <contact@henrik.io>
 ;; Author: Wilfred Hughes <me@wilfred.me.uk>
-;; URL: https://github.com/Wilfred/helpful
+;; URL: https://github.com/hlissner/helpful
 ;; Keywords: help, lisp
 ;; Version: 0.22
 ;; Package-Requires: ((emacs "27") (elisp-refs "1.2"))
@@ -109,7 +111,7 @@ will have lines that are wider than WIDTH."
 
 (defgroup helpful nil
   "A rich help system with contextual information."
-  :link '(url-link "https://github.com/Wilfred/helpful")
+  :link '(url-link "https://github.com/hlissner/helpful")
   :group 'help)
 
 (defcustom helpful-max-buffers
