@@ -1,0 +1,31 @@
+# FIXME: Unavailable until doomemacs/core@v3
+# name: Run test suite
+# on: [push, pull_request]
+# jobs:
+#   test:
+#     runs-on: ubuntu-latest
+#     strategy:
+#       matrix:
+#         emacs_version:
+#           - '27.1'
+#           - '28.1'
+#           - '29.1'
+#           - '30.1'
+#           - '30.2'
+#           - 'snapshot'
+
+#     steps:
+#     - uses: actions/checkout@v7
+#     - uses: doomemacs/ci@main
+#       with:
+#         version: ${{ matrix.emacs_version }}
+#     - name: Install dependencies with Doom
+#       run: doom install .
+#     - name: Run tests
+#       # Run tests under both interpreted and compiled elisp.
+#       run: doom run tests
+#     - name: Run tests (compiled elisp)
+#       # Run tests under both interpreted and compiled elisp.
+#       run: |
+#         doom run compile
+#         doom run tests

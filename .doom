@@ -1,0 +1,4 @@
+"2.3.0"
+((name . helpful)
+ (commits (preset doom))
+ (modules :doom (cli +ert +commit-linter)))

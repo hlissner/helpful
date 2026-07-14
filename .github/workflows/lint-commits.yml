@@ -1,0 +1,19 @@
+# FIXME: Unavailable until doomemacs/core@v3
+# name: Lint commits
+# on: [push, pull_request]
+# jobs:
+#   lint-commits:
+#     timeout-minutes: 10
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Set up Doom Emacs CI
+#         uses: doomemacs/ci@main
+
+#       - name: Checkout current project
+#         uses: actions/checkout@v7
+
+#       - name: Run commit linter
+#         env:
+#           FROM: ${{ github.event.pull_request.base.sha }}
+#           TO:   ${{ github.event.pull_request.head.sha }}
+#         run: doom run lint-commits $FROM $TO
