@@ -1,19 +1,21 @@
 ;;; helpful-unit-test.el -*- lexical-binding: t; -*-
 
+(require 'seq)
 (require 'ert)
 (require 'edebug)
 (require 'helpful)
 (require 'python)
 
-(when noninteractive
-  (unless find-function-C-source-directory
-    (let* ((emacs-src-path (f-join default-directory "emacs-25.3" "src")))
-      (if (f-exists-p emacs-src-path)
-          (setq find-function-C-source-directory emacs-src-path)
-        (message "No Emacs source code found at %S, some tests will be skipped. Run ./download_emacs_src.sh"
-                 emacs-src-path))))
+;; FIXME: upstream or here?
+;; (when noninteractive
+;;   (unless find-function-C-source-directory
+;;     (let* ((emacs-src-path (file-name-concat default-directory "emacs-25.3" "src")))
+;;       (if (f-exists-p emacs-src-path)
+;;           (setq find-function-C-source-directory emacs-src-path)
+;;         (message "No Emacs source code found at %S, some tests will be skipped. Run ./download_emacs_src.sh"
+;;                  emacs-src-path))))
 
-  (setq jka-compr-verbose nil))
+;;   (setq jka-compr-verbose nil))
 
 (defvar helpful-test-var nil)
 (define-obsolete-variable-alias 'helpful-test-var-obsolete
@@ -69,7 +71,7 @@
   (let* ((docstring (helpful--docstring #'apply t))
          (formatted-docstring (helpful--format-docstring docstring)))
     (should
-     (not (s-contains-p "\\=" formatted-docstring)))))
+     (not (string-match-p "\\=" formatted-docstring)))))
 
 (ert-deftest helpful--docstring-strings ()
   "Double-quoted strings should be treated literally."
@@ -262,11 +264,11 @@ symbol (not a form)."
   "Ensure we handle `foo' formatting correctly."
   ;; If it's bound, we should link it.
   (let* ((formatted (helpful--format-docstring "foo `message'."))
-         (m-position (s-index-of "m" formatted)))
+         (m-position (string-match-p "m" formatted)))
     (should (get-text-property m-position 'button formatted)))
   ;; If it's not bound, we should not.
   (let* ((formatted (helpful--format-docstring "foo `messagexxx'."))
-         (m-position (s-index-of "m" formatted)))
+         (m-position (string-match-p "m" formatted)))
     (should (not (get-text-property m-position 'button formatted)))
     ;; But we should always remove the backticks.
     (should (equal formatted "foo messagexxx.")))
@@ -278,7 +280,7 @@ symbol (not a form)."
 (ert-deftest helpful--format-docstring-escapes ()
   "Ensure we handle escaped quotes correctly."
   (let* ((formatted (helpful--format-docstring "foo \\=`message\\='."))
-         (m-position (s-index-of "m" formatted)))
+         (m-position (string-match-p "m" formatted)))
     (should (equal formatted "foo `message'."))
     (should (not (get-text-property m-position 'button formatted)))))
 
@@ -286,14 +288,14 @@ symbol (not a form)."
   "Ensure we propertize references to command key sequences."
   ;; This test will fail in your current Emacs instance if you've
   ;; overridden the `set-mark-command' keybinding.
-  (-let [formatted (helpful--format-docstring "\\[set-mark-command]")]
+  (let ((formatted (helpful--format-docstring "\\[set-mark-command]")))
     (should
      (string-equal formatted "C-SPC"))
     (should
      (get-text-property 0 'button formatted)))
   ;; If we have quotes around a key sequence, we should not propertize
   ;; it as the button styling will no longer be visible.
-  (-let* ((emacs-major-version 28)
+  (let* ((emacs-major-version 28)
          (formatted (helpful--format-docstring "`\\[set-mark-command]'")))
     (should
      (string-equal formatted "C-SPC"))
@@ -301,7 +303,7 @@ symbol (not a form)."
      (eq
       (get-text-property 0 'face formatted)
       'help-key-binding)))
-  (-let* ((emacs-major-version 27)
+  (let* ((emacs-major-version 27)
          (formatted (helpful--format-docstring "`\\[set-mark-command]'")))
     (should
      (string-equal formatted "C-SPC"))
@@ -312,54 +314,54 @@ symbol (not a form)."
 
 (ert-deftest helpful--format-docstring-mode-maps ()
   "Ensure we propertize references to keymaps."
-  (-let [formatted (helpful--format-docstring "\\{python-mode-map}")]
+  (let ((formatted (helpful--format-docstring "\\{python-mode-map}")))
     (should
-     (s-contains-p "run-python" formatted)))
+     (string-match-p "run-python" formatted)))
   ;; Handle non-existent mode maps gracefully.
-  (-let [formatted (helpful--format-docstring "\\{no-such-mode-map}")]
+  (let ((formatted (helpful--format-docstring "\\{no-such-mode-map}")))
     (should
-     (s-contains-p "not currently defined" formatted))))
+     (string-match-p "not currently defined" formatted))))
 
 (ert-deftest helpful--format-docstring--info ()
   "Ensure we propertize references to the info manual."
   ;; This is the typical format.
   (let* ((formatted (helpful--format-docstring "Info node `(elisp)foo'"))
-         (paren-position (s-index-of "(" formatted)))
+         (paren-position (string-match-p "(" formatted)))
     (should
      (string-equal formatted "Info node (elisp)foo"))
     (should
      (get-text-property paren-position 'button formatted)))
   ;; Some functions, such as `signal', use 'anchor'.
   (let* ((formatted (helpful--format-docstring "Info anchor `(elisp)foo'"))
-         (paren-position (s-index-of "(" formatted)))
+         (paren-position (string-match-p "(" formatted)))
     (should
      (string-equal formatted "Info anchor (elisp)foo"))
     (should
      (get-text-property paren-position 'button formatted)))
   ;; Ensure we handle wrapped lines too, e.g. in `org-odt-pixels-per-inch'.
   (let* ((formatted (helpful--format-docstring "Info node `(elisp)foo \nbar'"))
-         (paren-position (s-index-of "(" formatted)))
+         (paren-position (string-match-p "(" formatted)))
     (should
      (string-equal formatted "Info node (elisp)foo \nbar"))
     (should
      (get-text-property paren-position 'button formatted)))
   ;; Some docstrings use "info" (lowercase).
   (let* ((formatted (helpful--format-docstring "info node `(elisp)foo'"))
-         (paren-position (s-index-of "(" formatted)))
+         (paren-position (string-match-p "(" formatted)))
     (should
      (string-equal formatted "info node (elisp)foo"))
     (should
      (get-text-property paren-position 'button formatted)))
   ;; Some docstrings use angular quotation marks.
   (let* ((formatted (helpful--format-docstring "Info node ‘(elisp)foo’"))
-         (paren-position (s-index-of "(" formatted)))
+         (paren-position (string-match-p "(" formatted)))
     (should
      (string-equal formatted "Info node (elisp)foo"))
     (should
      (get-text-property paren-position 'button formatted)))
   ;; If there's no manual information, assume it is part of the Emacs manual.
   (let* ((formatted (helpful--format-docstring "Info node ‘foo’"))
-         (paren-position (s-index-of "(" formatted)))
+         (paren-position (string-match-p "(" formatted)))
     (should
      (string-equal formatted "Info node (emacs)foo"))
     (should
@@ -368,7 +370,7 @@ symbol (not a form)."
 (ert-deftest helpful--format-docstring--url ()
   "Ensure we propertize URLs with backticks."
   (let* ((formatted (helpful--format-docstring "URL `http://example.com'"))
-         (url-position (s-index-of "h" formatted)))
+         (url-position (string-match-p "h" formatted)))
     (should
      (string-equal formatted "URL http://example.com"))
     (should
@@ -377,7 +379,7 @@ symbol (not a form)."
 (ert-deftest helpful--format-docstring--bare-url ()
   "Ensure we propertize URLs without backticks."
   (let* ((formatted (helpful--format-docstring "http://example.com\nbar"))
-         (url-position (s-index-of "h" formatted)))
+         (url-position (string-match-p "h" formatted)))
     (should
      (string-equal formatted "http://example.com\nbar"))
     (should
@@ -388,7 +390,7 @@ symbol (not a form)."
       "http://example.com")))
   ;; Don't consider trailing punctuation to be part of the URL.
   (let* ((formatted (helpful--format-docstring "See http://example.com."))
-         (url-position (s-index-of "h" formatted)))
+         (url-position (string-match-p "h" formatted)))
     (should
      (string-equal formatted "See http://example.com."))
     (should
@@ -397,7 +399,7 @@ symbol (not a form)."
       "http://example.com")))
   ;; Format markdown-style links.
   (let* ((formatted (helpful--format-docstring "See <http://example.com>."))
-         (url-position (s-index-of "h" formatted)))
+         (url-position (string-match-p "h" formatted)))
     (should
      (equal
       (get-text-property url-position 'url formatted)
@@ -411,8 +413,7 @@ symbol (not a form)."
 (ert-deftest helpful--definition-special-form ()
   "Ensure we find the position of special forms."
   (skip-unless find-function-C-source-directory)
-  (-let [(buf pos _)
-         (helpful--definition 'if t)]
+  (seq-let (buf pos _opened) (helpful--definition 'if t)
     (should buf)
     (should pos)))
 
@@ -430,7 +431,7 @@ variables defined without `defvar'."
   ;; Emacs instance.
   (skip-unless (null (get-buffer "python.el.gz")))
 
-  (-let [(buf _pos opened) (helpful--definition 'python-indent-offset nil)]
+  (seq-let (buf _pos opened) (helpful--definition 'python-indent-offset nil)
     (should (bufferp buf))
     (should opened)))
 
@@ -448,13 +449,12 @@ variables defined without `defvar'."
 		   (lambda (_format-string &rest _args))))
           (eval (eval-sexp-add-defvars (edebug-read-top-level-form)) t))
 
-        (-let [(buf _pos _opened) (helpful--definition 'test-foo-edebug-defn t)]
+        (seq-let (buf _pos _opened) (helpful--definition 'test-foo-edebug-defn t)
           (should buf))))))
 
 (ert-deftest helpful--definition-defstruct ()
   "Ensure we find the position of struct functions."
-  (-let [(buf pos _)
-         (helpful--definition #'make-ert-test t)]
+  (seq-let (buf pos _) (helpful--definition #'make-ert-test t)
     (should buf)
     (should pos)))
 
@@ -501,7 +501,7 @@ buffers lying around."
                 initial-buffers))
     (should
      (null
-      (-difference (buffer-list) expected-buffers)))))
+      (seq-difference (buffer-list) expected-buffers)))))
 
 (ert-deftest helpful--kind-name ()
   (should
@@ -777,29 +777,29 @@ in."
       (c . (11))))))
 
 (ert-deftest helpful--source ()
-  (-let* (((buf pos _opened) (helpful--definition #'helpful--source t))
-          (source (helpful--source #'helpful--source t buf pos)))
-    (should
-     (s-starts-with-p "(defun " source))))
+  (seq-let (buf pos _opened) (helpful--definition #'helpful--source t)
+    (let ((source (helpful--source #'helpful--source t buf pos)))
+      (should
+       (string-prefix-p "(defun " source)))))
 
 (ert-deftest helpful--source-c-fn ()
-  (-let* (((buf pos _opened) (helpful--definition 'mode-line-format nil))
-          (source (helpful--source 'mode-line-format nil buf pos)))
-    (should
-     (s-starts-with-p "DEFVAR" (s-trim-left source)))))
+  (seq-let (buf pos _opened) (helpful--definition 'mode-line-format nil)
+    (let ((source (helpful--source 'mode-line-format nil buf pos)))
+      (should
+       (string-prefix-p "DEFVAR" (string-trim-left source))))))
 
 (ert-deftest helpful--source-autoloaded ()
   "We should include the autoload cookie."
-  (-let* (((buf pos _opened) (helpful--definition #'helpful-at-point t))
-          (source (helpful--source #'helpful-at-point t buf pos)))
-    (should
-     (s-starts-with-p ";;;###autoload" source))))
+  (seq-let (buf pos _opened) (helpful--definition #'helpful-at-point t)
+    (let ((source (helpful--source #'helpful-at-point t buf pos)))
+      (should
+       (string-prefix-p ";;;###autoload" source)))))
 
 (ert-deftest helpful--source--interactively-defined-fn ()
   "We should return the raw sexp for functions where we can't
 find the source code."
   (eval '(defun test-foo-defined-interactively () 42))
-  (-let* (((buf pos _opened) (helpful--definition #'test-foo-defined-interactively t)))
+  (seq-let (buf pos _opened) (helpful--definition #'test-foo-defined-interactively t)
     (should
      (not
       (null
@@ -812,8 +812,7 @@ find the source code."
     (goto-char (point-min))
     (search-forward "b")
 
-    (-let [(pos subforms)
-           (helpful--outer-sexp (current-buffer) (point))]
+    (seq-let (pos subforms) (helpful--outer-sexp (current-buffer) (point))
       (should
        (equal pos (point-min)))
       (should
@@ -825,9 +824,9 @@ find the source code."
     (search-forward "b")
     (backward-char 2)
 
-    (-let [(pos subforms)
-           (save-excursion
-             (helpful--outer-sexp (current-buffer) (point)))]
+    (seq-let (pos subforms)
+        (save-excursion
+          (helpful--outer-sexp (current-buffer) (point)))
       (should
        (equal pos (point)))
       (should
@@ -836,46 +835,46 @@ find the source code."
 (ert-deftest helpful--summary--aliases ()
   ;; exclude the sym itself
   "Ensure we mention that a symbol is an alias."
-  (-let* (((buf pos opened) (helpful--definition '-select t))
-          (summary (helpful--summary '-select t buf pos)))
-    (when opened
-      (kill-buffer buf))
-    ;; Strip properties to make assertion messages more readable.
-    (set-text-properties 0 (1- (length summary)) nil summary)
-    (should
-     (equal
-      summary
-      "-select is a function alias for -filter, defined in dash.el."))))
+  (seq-let (buf pos opened) (helpful--definition '-select t)
+    (let ((summary (helpful--summary '-select t buf pos)))
+      (when opened
+        (kill-buffer buf))
+      ;; Strip properties to make assertion messages more readable.
+      (set-text-properties 0 (1- (length summary)) nil summary)
+      (should
+       (equal
+        summary
+        "-select is a function alias for -filter, defined in dash.el.")))))
 
 (ert-deftest helpful--summary--special-form ()
   "Ensure we describe special forms correctly"
-  (-let* ((summary (helpful--summary 'if t nil nil)))
+  (let ((summary (helpful--summary 'if t nil nil)))
     ;; Strip properties to make assertion messages more readable.
     (set-text-properties 0 (1- (length summary)) nil summary)
     (should
-     (s-starts-with-p "if is a special form defined in" summary))))
+     (string-prefix-p "if is a special form defined in" summary))))
 
 (defun helpful-test-fn-interactive ()
   (interactive))
 
 (ert-deftest helpful--summary--interactive-fn ()
   "Ensure we use \"an\" for interactive functions."
-  (let* ((summary (helpful--summary 'helpful-test-fn-interactive t nil nil)))
+  (let ((summary (helpful--summary 'helpful-test-fn-interactive t nil nil)))
     ;; Strip properties to make assertion messages more readable.
     (set-text-properties 0 (1- (length summary)) nil summary)
     (should
-     (s-starts-with-p "helpful-test-fn-interactive is an interactive function" summary))))
+     (string-prefix-p "helpful-test-fn-interactive is an interactive function" summary))))
 
 (defun helpful-test-fn? ()
   (interactive))
 
 (ert-deftest helpful--summary--fn-with-? ()
   "Ensure we use don't needlessly escape ? in function names."
-  (let* ((summary (helpful--summary 'helpful-test-fn? t nil nil)))
+  (let ((summary (helpful--summary 'helpful-test-fn? t nil nil)))
     ;; Strip properties to make assertion messages more readable.
     (set-text-properties 0 (1- (length summary)) nil summary)
     (should
-     (s-starts-with-p "helpful-test-fn? is" summary))))
+     (string-prefix-p "helpful-test-fn? is" summary))))
 
 (ert-deftest helpful--signature-fn-with? ()
   "Ensure that symbols with question marks are handled correctly."
@@ -888,11 +887,11 @@ find the source code."
 
 (ert-deftest helpful--summary--symbol-with-space ()
   "Ensure we correctly format symbols containing spaces."
-  (let* ((summary (helpful--summary 'helpful-test-fn-with\ space t nil nil)))
+  (let ((summary (helpful--summary 'helpful-test-fn-with\ space t nil nil)))
     ;; Strip properties to make assertion messages more readable.
     (set-text-properties 0 (1- (length summary)) nil summary)
     (should
-     (s-starts-with-p "helpful-test-fn-with\\ space is a function" summary))))
+     (string-prefix-p "helpful-test-fn-with\\ space is a function" summary))))
 
 (ert-deftest helpful--bound-p ()
   ;; Functions.
@@ -1011,7 +1010,7 @@ find the source code."
 
 ;; TODO: broken when byte-compiling helpful.el.
 ;; (ert-deftest helpful--autoloaded-p ()
-;;   (-let [(buf pos opened) (helpful--definition 'rx-to-string t)]
+;;   (seq-let (buf pos opened) (helpful--definition 'rx-to-string t)
 ;;     (should (helpful--autoloaded-p 'rx-to-string buf))
 ;;     (when opened
 ;;       (kill-buffer buf))))
@@ -1019,7 +1018,7 @@ find the source code."
 (ert-deftest helpful--inhibit-read-only ()
   (helpful-variable 'inhibit-read-only)
   (should
-   (s-contains-p "Value\nnil" (buffer-string))))
+   (string-match-p "Value\nnil" (buffer-string))))
 
 (ert-deftest helpful--convert-c-name ()
   (should
@@ -1070,11 +1069,11 @@ find the source code."
   "Show the original value for defcustom variables."
   (helpful-variable 'helpful-test-custom-var)
   (should
-   (s-contains-p "Original Value\n123" (buffer-string))))
+   (string-match-p "Original Value\n123" (buffer-string))))
 
 (ert-deftest helpful--preserve-position ()
   "Show the original value for defcustom variables."
-  (-let [(buf _pos _opened) (helpful--definition 'helpful-test-custom-var nil)]
+  (seq-let (buf _pos _opened) (helpful--definition 'helpful-test-custom-var nil)
     (with-current-buffer buf
       (goto-char (point-min))
       (save-current-buffer
@@ -1085,22 +1084,22 @@ find the source code."
   "Report when a variable was added"
   (helpful-variable 'helpful-test-custom-var)
   (should
-   (s-contains-p
-    (s-word-wrap
-     70
-     "This variable was added, or its default value changed, in helpful version 1.2.3.")
+   (string-match-p
+    (string-fill
+     "This variable was added, or its default value changed, in helpful version 1.2.3."
+     70)
     (buffer-string))))
 
 (ert-deftest helpful--display-implementations ()
   (require 'xref)
   (helpful-function 'xref-location-marker)
-  (should (s-contains-p "Implementations" (buffer-string)))
+  (should (string-match-p "Implementations" (buffer-string)))
   (should (if (version< emacs-version "29.1")
-	      (s-contains-p "((l xref-file-location))" (buffer-string))
-	    (s-contains-p "(xref-location-marker (L xref-file-location))" (buffer-string))))
+	      (string-match-p "((l xref-file-location))" (buffer-string))
+	    (string-match-p "(xref-location-marker (L xref-file-location))" (buffer-string))))
   (should (if (version< emacs-version "29.1")
-	      (s-contains-p "((l xref-buffer-location))" (buffer-string))
-	    (s-contains-p "(xref-location-marker (L xref-buffer-location))" (buffer-string)))))
+	      (string-match-p "((l xref-buffer-location))" (buffer-string))
+	    (string-match-p "(xref-location-marker (L xref-buffer-location))" (buffer-string)))))
 
 (defun helpful--boring-advice (orig-fn &rest args)
   (apply orig-fn args))
