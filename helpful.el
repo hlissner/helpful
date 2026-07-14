@@ -62,6 +62,10 @@
 (declare-function org-link-store-props "ol" (&rest plist))
 (declare-function org-link-get-parameter "ol" (type key))
 
+
+;;
+;;; * Emacs <28 Compatibility
+
 ;; Introduced in Emacs 28.1
 (unless (fboundp 'string-pad)
   (defun string-pad (string length &optional padding start)
@@ -99,22 +103,9 @@ will have lines that are wider than WIDTH."
         (fill-region (point-min) (point-max)))
       (buffer-string))))
 
-(defvar-local helpful--sym nil)
-(defvar-local helpful--callable-p nil)
-(defvar-local helpful--associated-buffer nil
-  "The buffer being used when showing inspecting
-buffer-local variables.")
-(defvar-local helpful--start-buffer nil
-  "The buffer we were originally called from.")
-(defvar-local helpful--view-literal nil
-  "Whether to show a value as a literal, or a pretty interactive
-view.")
-(defvar-local helpful--first-display t
-  "Whether this is the first time this results buffer has been
-displayed.
 
-Nil means that we're refreshing, so we don't want to clobber any
-settings changed by the user.")
+;;
+;;; * Variables
 
 (defgroup helpful nil
   "A rich help system with contextual information."
@@ -154,6 +145,35 @@ seems to be more efficient. This may change again in future.
 
 See `this-command' as an example of a large piece of C code that
 can make Helpful very slow.")
+
+(defvar-local helpful--sym nil)
+(defvar-local helpful--callable-p nil)
+(defvar-local helpful--associated-buffer nil
+  "The buffer being used when showing inspecting
+buffer-local variables.")
+(defvar-local helpful--start-buffer nil
+  "The buffer we were originally called from.")
+(defvar-local helpful--view-literal nil
+  "Whether to show a value as a literal, or a pretty interactive
+view.")
+(defvar-local helpful--first-display t
+  "Whether this is the first time this results buffer has been
+displayed.
+
+Nil means that we're refreshing, so we don't want to clobber any
+settings changed by the user.")
+
+
+;;
+;;; * Faces
+
+(defface helpful-heading
+  '((t (:weight bold)))
+  "Face used for headings in Helpful buffers.")
+
+
+;;
+;;; * Library
 
 (defun helpful--kind-name (symbol callable-p)
   "Describe what kind of symbol this is."
@@ -206,10 +226,6 @@ can make Helpful very slow.")
           (setq-local comment-start "//")
         (setq-local comment-start ";")))
     buf))
-
-(defface helpful-heading
-  '((t (:weight bold)))
-  "Face used for headings in Helpful buffers.")
 
 (defun helpful--heading (text)
   "Propertize TEXT as a heading."
