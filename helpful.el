@@ -664,7 +664,9 @@ overrides that to include previously opened buffers."
   (let* ((sym (button-get button 'symbol))
          (buf (button-get button 'buffer))
          (sym-value (helpful--sym-value sym buf))
-         (set-func (symbol-name helpful-set-variable-function))
+         (set-func (if (local-variable-p sym buf)
+                       "setq"
+                     (symbol-name helpful-set-variable-function)))
          ;; Inspired by `counsel-read-setq-expression'.
          (expr
           (minibuffer-with-setup-hook
@@ -1376,8 +1378,8 @@ Return nil otherwise."
        (package-version
         (format
          "This variable was added, or its default value changed, in %s version %s."
-         (car package-version)
-         (cdr package-version)))
+         (or (car-safe package-version) "unknown")
+         (or (cdr-safe package-version) "unknown")))
        (emacs-version
         (format
          "This variable was added, or its default value changed, in Emacs %s."
@@ -2651,7 +2653,9 @@ For example, \"(some-func FOO &optional BAR)\"."
             (cond
              ((symbolp sym)
               (help-function-arglist sym))
-             ((byte-code-function-p sym)
+             ((or (byte-code-function-p sym)
+                  (if (fboundp 'interpreted-function-p)
+                      (interpreted-function-p sym)))
               ;; argdesc can be a list of arguments or an integer
               ;; encoding the min/max number of arguments. See
               ;; Byte-Code Function Objects in the elisp manual.
@@ -3120,7 +3124,7 @@ See also `helpful-max-buffers'."
   "Store \"help\" type link when in a helpful buffer."
   (when (derived-mode-p 'helpful-mode)
     ;; Create a "help" link instead of a dedicated "helpful" link: the
-    ;; author of the Org document uses helful, but this is not
+    ;; author of the Org document uses helpful, but this is not
     ;; necessarily the case of the reader of the document.
     (org-link-store-props :type "help"
                           :link (format "help:%s" helpful--sym)
