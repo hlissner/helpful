@@ -1,4 +1,8 @@
-# v0.22 (unreleased)
+# v0.23 (unreleased)
+
+Removed dash, s, and f dependencies.
+
+Bumped minimum supported Emacs from 25 to 27.
 
 # v0.21 (released 30th July 2023)
 

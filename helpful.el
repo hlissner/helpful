@@ -6,7 +6,7 @@
 ;; URL: https://github.com/Wilfred/helpful
 ;; Keywords: help, lisp
 ;; Version: 0.22
-;; Package-Requires: ((emacs "25") (dash "2.18.0") (s "1.11.0") (f "0.20.0") (elisp-refs "1.2"))
+;; Package-Requires: ((emacs "27") (elisp-refs "1.2"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -42,12 +42,14 @@
 
 ;;; Code:
 
+(eval-when-compile
+  (require 'cl-lib))
+
+(require 'seq)
+(require 'subr-x)
 (require 'elisp-refs)
 (require 'help)
 (require 'help-fns)
-(require 'dash)
-(require 's)
-(require 'f)
 (require 'find-func)
 (require 'nadvice)
 (require 'info-look)
@@ -59,6 +61,43 @@
 (declare-function org-link-types "ol" ())
 (declare-function org-link-store-props "ol" (&rest plist))
 (declare-function org-link-get-parameter "ol" (type key))
+
+;; Introduced in Emacs 28.1
+(unless (fboundp 'string-pad)
+  (defun string-pad (string length &optional padding start)
+    "Pad STRING to LENGTH using PADDING.
+If PADDING is nil, the space character is used.  If not nil, it
+should be a character.
+
+If STRING is longer than the absolute value of LENGTH, no padding
+is done.
+
+If START is nil (or not present), the padding is done to the end
+of the string, and if non-nil, padding is done to the start of
+the string."
+    (declare (pure t) (side-effect-free t))
+    (unless (natnump length)
+      (signal 'wrong-type-argument (list 'natnump length)))
+    (let ((pad-length (- length (length string))))
+      (cond ((<= pad-length 0) string)
+            (start (concat (make-string pad-length (or padding ?\s)) string))
+            (t (concat string (make-string pad-length (or padding ?\s))))))))
+
+;; Introduced in Emacs 28.1
+(unless (fboundp 'string-fill)
+  (defun string-fill (string width)
+    "Try to word-wrap STRING so that it displays with lines no wider than WIDTH.
+STRING is wrapped where there is whitespace in it.  If there are
+individual words in STRING that are wider than WIDTH, the result
+will have lines that are wider than WIDTH."
+    (declare (important-return-value t))
+    (with-temp-buffer
+      (insert string)
+      (goto-char (point-min))
+      (let ((fill-column width)
+            (adaptive-fill-mode nil))
+        (fill-region (point-min) (point-max)))
+      (buffer-string))))
 
 (defvar-local helpful--sym nil)
 (defvar-local helpful--callable-p nil)
@@ -141,15 +180,16 @@ can make Helpful very slow.")
       ;; `helpful-max-buffers' by killing the least recently used.
       (when (numberp helpful-max-buffers)
         (let* ((buffers (buffer-list))
-               (helpful-bufs (--filter (with-current-buffer it
-                                         (eq major-mode 'helpful-mode))
-                                       buffers))
+               (helpful-bufs (seq-filter (lambda (it)
+                                           (with-current-buffer it
+                                             (eq major-mode 'helpful-mode)))
+                                         buffers))
                ;; `buffer-list' seems to be ordered by most recently
                ;; visited first, so keep those.
-               (excess-buffers (-drop (1- helpful-max-buffers) helpful-bufs)))
+               (excess-buffers (seq-drop helpful-bufs (1- helpful-max-buffers))))
           ;; Kill buffers so we have one buffer less than the maximum
           ;; before we create a new one.
-          (-each excess-buffers #'kill-buffer)))
+          (mapc #'kill-buffer excess-buffers)))
 
       (setq buf (get-buffer-create buf-name)))
 
@@ -177,18 +217,19 @@ can make Helpful very slow.")
 
 (defun helpful--format-closure (sym form)
   "Given a closure, return an equivalent defun form."
-  (-let (((_keyword _env args . body) form)
-         (docstring nil))
-    (when (stringp (car body))
-      (setq docstring (car body))
-      (setq body (cdr body))
-      ;; Ensure that the docstring doesn't have lines starting with (,
-      ;; or it breaks indentation.
-      (setq docstring
-            (s-replace "\n(" "\n\\(" docstring)))
-    (if docstring
-        `(defun ,sym ,args ,docstring ,@body)
-      `(defun ,sym ,args ,@body))))
+  (let (docstring)
+    (cl-destructuring-bind (_keyword _env args . body) form
+      (when (stringp (car body))
+        (setq docstring (car body))
+        (setq body (cdr body))
+        ;; Ensure that the docstring doesn't have lines starting with (,
+        ;; or it breaks indentation.
+        (setq docstring
+              (replace-regexp-in-string
+               (regexp-quote "\n(") "\n\\(" docstring t t)))
+      (if docstring
+          `(defun ,sym ,args ,docstring ,@body)
+        `(defun ,sym ,args ,@body)))))
 
 (defun helpful--pretty-print (value)
   "Pretty-print VALUE.
@@ -198,7 +239,7 @@ gracefully stop the printing. If VALUE is self-referential, the
 error will be caught and displayed."
   ;; Inspired by `ielm-eval-input'.
   (condition-case err
-      (s-trim-right (pp-to-string value))
+      (string-trim-right (pp-to-string value))
     (error
      (propertize (format "(Display error: %s)" (cadr err))
                  'face 'font-lock-comment-face))
@@ -208,9 +249,7 @@ error will be caught and displayed."
 
 (defun helpful--sort-symbols (sym-list)
   "Sort symbols in SYM-LIST alphabetically."
-  (--sort
-   (string< (symbol-name it) (symbol-name other))
-   sym-list))
+  (seq-sort #'string< sym-list))
 
 (defun helpful--button (text type &rest properties)
   ;; `make-text-button' mutates our string to add properties. Copy
@@ -273,7 +312,7 @@ Return SYM otherwise."
                      'callable-p callable-p)))
     (cond
      (obsolete-info
-      (-if-let (version (-last-item obsolete-info))
+      (if-let* ((version (car (last obsolete-info))))
           (format "%s (obsolete since %s)" sym-button version)
         (format "%s (obsolete)" sym-button)))
      (t
@@ -289,34 +328,35 @@ Return SYM otherwise."
 (defun helpful--format-properties (symbol)
   "Return a string describing all the properties of SYMBOL."
   (let* ((syms-and-vals
-          (-partition 2 (and (symbolp symbol) (symbol-plist symbol))))
+          (seq-partition (and (symbolp symbol) (symbol-plist symbol)) 2))
          (syms-and-vals
-          (-sort (-lambda ((sym1 _) (sym2 _))
-                   (string-lessp (symbol-name sym1) (symbol-name sym2)))
-                 syms-and-vals))
+          (seq-sort (lambda (a b) (string< (car a) (car b)))
+                     syms-and-vals))
          (lines
-          (--map
-           (-let* (((sym val) it)
-                   (pretty-val
-                    (helpful--pretty-print val)))
-             (format "%s\n%s%s"
-                     (propertize (symbol-name sym)
-                                 'face 'font-lock-constant-face)
-                     (helpful--indent-rigidly pretty-val 2)
-                     (cond
-                      ;; Also offer to disassemble byte-code
-                      ;; properties.
-                      ((byte-code-function-p val)
-                       (format "\n  %s"
-                               (helpful--make-disassemble-button val)))
-                      ((eq sym 'ert--test)
-                       (format "\n  %s"
-                               (helpful--make-run-test-button symbol)))
-                      (t
-                       ""))))
+          (mapcar
+           (lambda (it)
+             (let* ((sym (car it))
+                    (val (cadr it))
+                    (pretty-val
+                     (helpful--pretty-print val)))
+               (format "%s\n%s%s"
+                       (propertize (symbol-name sym)
+                                   'face 'font-lock-constant-face)
+                       (helpful--indent-rigidly pretty-val 2)
+                       (cond
+                        ;; Also offer to disassemble byte-code
+                        ;; properties.
+                        ((byte-code-function-p val)
+                         (format "\n  %s"
+                                 (helpful--make-disassemble-button val)))
+                        ((eq sym 'ert--test)
+                         (format "\n  %s"
+                                 (helpful--make-run-test-button symbol)))
+                        (t
+                         "")))))
            syms-and-vals)))
     (when lines
-      (s-join "\n" lines))))
+      (string-join lines "\n"))))
 
 (define-button-type 'helpful-forget-button
   'action #'helpful--forget
@@ -349,8 +389,9 @@ source code to primitives."
   (let ((emacs-src-dir (read-directory-name "Path to Emacs source code: ")))
     ;; Let the user specify the source path with or without src/,
     ;; which is a subdirectory in the Emacs tree.
-    (unless (equal (f-filename emacs-src-dir) "src")
-      (setq emacs-src-dir (f-join emacs-src-dir "src")))
+    (unless (equal (file-name-nondirectory (directory-file-name emacs-src-dir))
+                   "src")
+      (setq emacs-src-dir (expand-file-name "src" emacs-src-dir)))
     (setq find-function-C-source-directory emacs-src-dir))
   (helpful-update))
 
@@ -396,7 +437,7 @@ source code to primitives."
     ;; `edebug-enter', `edebug-after' etc interleaved. This means the
     ;; function is interpreted, so `indirect-function' returns a list.
     (when (and (consp fn-def) (consp (cdr fn-def)))
-      (-let [fn-end (-last-item fn-def)]
+      (let ((fn-end (car (last fn-def))))
         (and (consp fn-end)
              (eq (car fn-end) 'edebug-enter))))))
 
@@ -414,27 +455,27 @@ source code to primitives."
 (defun helpful--toggle-edebug (sym)
   "Enable edebug when function SYM is called,
 or disable if already enabled."
-  (-let ((should-edebug (not (helpful--edebug-p sym)))
-         ((buf pos created) (helpful--definition sym t)))
-    (if (and buf pos)
-        (progn
-          (with-current-buffer buf
-            (save-excursion
-              (save-restriction
-                (widen)
-                (goto-char pos)
+  (let ((should-edebug (not (helpful--edebug-p sym))))
+    (cl-destructuring-bind (buf pos created) (helpful--definition sym t)
+      (if (and buf pos)
+          (progn
+            (with-current-buffer buf
+              (save-excursion
+                (save-restriction
+                  (widen)
+                  (goto-char pos)
 
-                (let* ((edebug-all-forms should-edebug)
-                       (edebug-all-defs should-edebug)
-                       (form (edebug-read-top-level-form)))
-                  ;; Based on `edebug-eval-defun'.
-                  (eval (eval-sexp-add-defvars form) lexical-binding)))))
-          ;; If we're enabling edebug, we need the source buffer to
-          ;; exist. Otherwise, we can clean it up.
-          (when (and created (not should-edebug))
-            (kill-buffer buf)))
+                  (let* ((edebug-all-forms should-edebug)
+                         (edebug-all-defs should-edebug)
+                         (form (edebug-read-top-level-form)))
+                    ;; Based on `edebug-eval-defun'.
+                    (eval (eval-sexp-add-defvars form) lexical-binding)))))
+            ;; If we're enabling edebug, we need the source buffer to
+            ;; exist. Otherwise, we can clean it up.
+            (when (and created (not should-edebug))
+              (kill-buffer buf)))
 
-      (user-error "Could not find source for edebug"))))
+        (user-error "Could not find source for edebug")))))
 
 (defun helpful--edebug (button)
   "Toggle edebug for the current symbol."
@@ -475,8 +516,8 @@ If narrowing is in effect, widen if POS isn't in the narrowed area."
   (find-file (substring-no-properties (button-get button 'path)))
   ;; We use `get-text-property' to work around an Emacs 25 bug:
   ;; http://git.savannah.gnu.org/cgit/emacs.git/commit/?id=f7c4bad17d83297ee9a1b57552b1944020f23aea
-  (-when-let (pos (get-text-property button 'position
-                                     (marker-buffer button)))
+  (when-let* ((pos (get-text-property button 'position
+                                      (marker-buffer button))))
     (helpful--goto-char-widen pos)))
 
 (defun helpful--navigate-button (text path &optional pos)
@@ -532,7 +573,7 @@ If narrowing is in effect, widen if POS isn't in the narrowed area."
 
 This is largely equivalent to `read-buffer', but counsel.el
 overrides that to include previously opened buffers."
-  (let* ((names (-map #'buffer-name (buffer-list)))
+  (let* ((names (mapcar #'buffer-name (buffer-list)))
          (default
            (cond
             ;; If we're already looking at a buffer-local value, start
@@ -547,11 +588,10 @@ overrides that to include previously opened buffers."
              (buffer-name helpful--start-buffer))
             ;; If we're looking at the global value and have no initial
             ;; buffer, choose the first normal buffer.
-            (t
-             (--first (and (not (s-starts-with-p " " it))
-                           (not (s-starts-with-p "*" it)))
-                      names))
-            )))
+            ((seq-find (lambda (it)
+                         (and (not (string-prefix-p " " it))
+                              (not (string-prefix-p "*" it))))
+                       names)))))
     (get-buffer
      (completing-read
       prompt
@@ -693,8 +733,8 @@ overrides that to include previously opened buffers."
               (read raw-source)
             raw-source))
          (syms (helpful--callees source))
-         (primitives (-filter (lambda (sym) (helpful--primitive-p sym t)) syms))
-         (compounds (-remove (lambda (sym) (helpful--primitive-p sym t)) syms)))
+         (primitives (seq-filter (lambda (sym) (helpful--primitive-p sym t)) syms))
+         (compounds (seq-remove (lambda (sym) (helpful--primitive-p sym t)) syms)))
 
     (pop-to-buffer buf)
     (let ((inhibit-read-only t))
@@ -776,14 +816,14 @@ whether the symbol represents a variable or a callable."
 (defun helpful--split-first-line (docstring)
   "If the first line is a standalone sentence, ensure we have a
 blank line afterwards."
-  (let* ((lines (s-lines docstring))
-         (first-line (-first-item lines))
+  (let* ((lines (split-string docstring "\\(\r\n\\|[\n\r]\\)"))
+         (first-line (car lines))
          (second-line (when (> (length lines) 1) (nth 1 lines))))
-    (if (and (s-ends-with-p "." first-line)
+    (if (and (string-suffix-p "." first-line)
              (stringp second-line)
              (not (equal second-line "")))
-        (s-join "\n"
-                (-cons* first-line "" (cdr lines)))
+        (string-join (cons first-line (cons "" (cdr lines)))
+                     "\n")
       docstring)))
 
 (defun helpful--propertize-sym-ref (sym-name before-txt after-txt)
@@ -792,7 +832,7 @@ bound) or else highlight."
   (let* ((sym (intern sym-name)))
     (cond
      ;; Highlight keywords.
-     ((s-matches-p
+     ((string-match-p
        (rx ":"
            symbol-start
            (+? (or (syntax word) (syntax symbol)))
@@ -800,7 +840,7 @@ bound) or else highlight."
        sym-name)
       (propertize sym-name
                   'face 'font-lock-builtin-face))
-     ((and (boundp sym) (s-ends-with-p "variable " (downcase before-txt)))
+     ((and (boundp sym) (string-suffix-p "variable " (downcase before-txt)))
       (helpful--button
        sym-name
        'helpful-describe-exactly-button
@@ -808,9 +848,9 @@ bound) or else highlight."
        'callable-p nil))
      ((and (fboundp sym)
            (or
-            (s-starts-with-p " command" (downcase after-txt))
-            (s-ends-with-p "command " (downcase before-txt))
-            (s-ends-with-p "function " (downcase before-txt))))
+            (string-prefix-p " command" (downcase after-txt))
+            (string-suffix-p "command " (downcase before-txt))
+            (string-suffix-p "function " (downcase before-txt))))
       (helpful--button
        sym-name
        'helpful-describe-exactly-button
@@ -905,49 +945,50 @@ vector suitable for `key-description', and COMMAND is a smbol."
           nil)
          ;; Sparse keymaps are lists.
          ((consp item)
-          (-let [(keycode . value) item]
-            (-each (helpful--keymap-keys value)
-              (-lambda ((keycodes command))
-                (push (list (vconcat (vector keycode) keycodes) command)
-                      result)))))
+          (mapc (lambda (it)
+                  (push (list (vconcat (vector (car item)) (car it)) (cadr it))
+                        result))
+                (helpful--keymap-keys (cdr item))))
          ;; Dense keymaps are char-tables.
          ((char-table-p item)
           (map-char-table
            (lambda (keycode value)
-             (-each (helpful--keymap-keys value)
-               (-lambda ((keycodes command))
-                 (push (list (vconcat (vector keycode) keycodes) command)
-                       result))))
+             (mapc (lambda (it)
+                     (push (list (vconcat (vector keycode) (car it)) (cadr it))
+                           result))
+                   (helpful--keymap-keys value)))
            item))))
       ;; For every command `new-func' mapped to a command `orig-func', show `new-func' with
       ;; the key sequence for `orig-func'.
       (setq result
-            (-map-when
-             (-lambda ((keycodes _))
-               (and (> (length keycodes) 1)
-                    (eq (elt keycodes 0) 'remap)))
-             (-lambda ((keycodes command))
+            (mapcar
+             (lambda (it)
                (list
-                (where-is-internal (elt keycodes 1) global-map t)
-                command))
-             result))
+                (where-is-internal (elt (car it) 1) global-map t)
+                (cadr it)))
+             (seq-filter
+              (lambda (it)
+                (and (> (length (car it)) 1)
+                     (eq (elt (car it) 0) 'remap)))
+              result)))
       ;; Preserve the original order of the keymap.
       (nreverse result)))))
 
 (defun helpful--format-hook (hook-val)
   "Given a list value assigned to a hook, format it with links to functions."
   (let ((lines
-         (--map
-          (if (and (symbolp it) (fboundp it))
-              (helpful--button
-               (symbol-name it)
-               'helpful-describe-exactly-button
-               'symbol it
-               'callable-p t)
-            (helpful--syntax-highlight (helpful--pretty-print it)))
+         (mapcar
+          (lambda (it)
+            (if (and (symbolp it) (fboundp it))
+                (helpful--button
+                 (symbol-name it)
+                 'helpful-describe-exactly-button
+                 'symbol it
+                 'callable-p t)
+              (helpful--syntax-highlight (helpful--pretty-print it))))
           hook-val)))
     (format "(%s)"
-            (s-join "\n " lines))))
+            (string-join lines "\n "))))
 
 ;; TODO: unlike `substitute-command-keys', this shows keybindings
 ;; which are currently shadowed (e.g. a global minor mode map).
@@ -955,36 +996,36 @@ vector suitable for `key-description', and COMMAND is a smbol."
   "Format KEYMAP."
   (let* ((keys-and-commands (helpful--keymap-keys keymap))
          ;; Convert keycodes [27 i] to "C-M-i".
-         (keys (-map #'-first-item keys-and-commands))
+         (keys (mapcar #'car keys-and-commands))
          ;; Add padding so all our strings are the same length.
-         (formatted-keys (-map #'key-description keys))
-         (max-formatted-length (-max (cons 0 (-map #'length formatted-keys))))
-         (aligned-keys (--map (s-pad-right (1+ max-formatted-length)
-                                           " " it)
-                              formatted-keys))
+         (formatted-keys (mapcar #'key-description keys))
+         (max-formatted-length (apply #'max (cons 0 (mapcar #'length formatted-keys))))
+         (aligned-keys (mapcar (lambda (it)
+                                 (string-pad it (1+ max-formatted-length)))
+                               formatted-keys))
          ;; Format commands as buttons.
-         (commands (-map (-lambda ((_ command)) command)
-                         keys-and-commands))
+         (commands (mapcar #'cadr keys-and-commands))
          (formatted-commands
-          (--map
-           (cond
-            ((symbolp it)
-             (helpful--button
-              (symbol-name it)
-              'helpful-describe-button
-              'symbol it))
-            ((or (stringp it) (vectorp it))
-             "Keyboard Macro")
-            (t
-             "#<anonymous-function>"))
+          (mapcar
+           (lambda (it)
+             (cond
+              ((symbolp it)
+               (helpful--button
+                (symbol-name it)
+                'helpful-describe-button
+                'symbol it))
+              ((or (stringp it) (vectorp it))
+               "Keyboard Macro")
+              (t
+               "#<anonymous-function>")))
            commands))
          ;; Build lines for display.
          (lines
-          (-map (-lambda ((key . command)) (format "%s %s" key command))
-                (-zip-pair aligned-keys formatted-commands))))
+          (mapcar (lambda (it) (format "%s %s" (car it) (cdr it)))
+                  (seq-mapn #'cons aligned-keys formatted-commands))))
     ;; The flattened keymap will have normal bindings first, and
     ;; inherited bindings last. Sort so that we group by prefix.
-    (s-join "\n" (-sort #'string< lines))))
+    (string-join (seq-sort #'string< lines) "\n")))
 
 (defun helpful--format-commands (str keymap)
   "Replace all the \\[ references in STR with buttons."
@@ -1050,7 +1091,7 @@ unescaping too."
                 (progn
                   (setq contents (buffer-substring start-pos end-pos))
                   (delete-region start-pos end-pos)
-                  (insert (s-replace "\\" "\\\\" contents)))
+                  (insert (replace-regexp-in-string "\\" "\\\\" contents t t)))
               (forward-char 1))))
          ((looking-at
            ;; Text of the form \=X
@@ -1072,11 +1113,11 @@ unescaping too."
               ;; If there's no closing ' to match the opening `, just
               ;; leave it.
               (goto-char (1+ start-pos)))
-             ((s-contains-p "`" contents)
+             ((string-match-p "`" contents)
               ;; If we have repeated backticks `foo `bar', leave the
               ;; first one.
               (goto-char (1+ start-pos)))
-             ((s-contains-p "\\[" contents)
+             ((string-match-p "\\[" contents)
               (delete-region start-pos end-pos)
               (insert (helpful--format-commands contents keymap)))
              ;; Highlight a normal `foo', extracting the surrounding
@@ -1131,13 +1172,13 @@ unescaping too."
 ;; in the docstring for `--map'.
 (defun helpful--format-docstring (docstring)
   "Replace cross-references with links in DOCSTRING."
-  (-> docstring
-      (helpful--split-first-line)
-      (helpful--propertize-info)
-      (helpful--propertize-links)
-      (helpful--propertize-bare-links)
-      (helpful--format-command-keys)
-      (s-trim)))
+  (thread-first docstring
+                (helpful--split-first-line)
+                (helpful--propertize-info)
+                (helpful--propertize-links)
+                (helpful--propertize-bare-links)
+                (helpful--format-command-keys)
+                (string-trim)))
 
 (define-button-type 'helpful-link-button
   'action #'helpful--follow-link
@@ -1214,8 +1255,8 @@ hooks.")
               (setq hook-funcs (append hook-funcs funcs))))
 
           ;; Filter hooks to those that relate to highlighting, and run them.
-          (setq hook-funcs (-intersection hook-funcs helpful--highlighting-funcs))
-          (-map #'funcall hook-funcs))
+          (setq hook-funcs (seq-intersection hook-funcs helpful--highlighting-funcs))
+          (mapcar #'funcall hook-funcs))
 
         (if (fboundp 'font-lock-ensure)
             (font-lock-ensure)
@@ -1274,7 +1315,7 @@ If the source code cannot be found, return the sexp used."
               (setq pos (point-min))
 
               (setq source (buffer-substring-no-properties (point-min) (point-max))))))
-        (setq source (s-trim-right source))
+        (setq source (string-trim-right source))
         (when (and source (buffer-file-name buf))
           (setq source (propertize source
                                    'helpful-path (buffer-file-name buf)
@@ -1300,7 +1341,7 @@ If the source code cannot be found, return the sexp used."
          (cl-letf (((symbol-function #'message)
                     (lambda (_format-string &rest _args))))
            (info-lookup->completions 'symbol 'emacs-lisp-mode))))
-    (-when-let (buf (get-buffer " temp-info-look"))
+    (when-let* ((buf (get-buffer " temp-info-look")))
       (kill-buffer buf))
     (or (assoc sym completions)
         (assoc-string sym completions))))
@@ -1331,10 +1372,10 @@ LIBRARY-NAME takes the form \"foo.el\" , \"foo.el\" or
 \"src/foo.c\".
 
 If .elc files exist without the corresponding .el, return nil."
-  (when (member (f-ext library-name) '("c" "rs"))
+  (when (member (file-name-extension library-name) '("c" "rs"))
     (setq library-name
-          (f-expand library-name
-                    (f-parent find-function-C-source-directory))))
+          (expand-file-name (concat "../" library-name)
+                            find-function-C-source-directory)))
   (condition-case nil
       (find-library-name library-name)
     (error nil)))
@@ -1417,11 +1458,11 @@ the `emacs-lisp-mode' syntax table active but skip any hooks."
     (let ((auto-mode-alist nil))
       (setq buf (find-file-noselect path)))
 
-    (unless (-contains-p initial-buffers buf)
+    (unless (member buf initial-buffers)
       (setq opened t)
 
       (let ((syntax-table emacs-lisp-mode-syntax-table))
-        (when (s-ends-with-p ".c" path)
+        (when (string-suffix-p ".c" path)
           (setq syntax-table (make-syntax-table))
           (c-populate-syntax-table syntax-table))
 
@@ -1470,7 +1511,8 @@ buffer."
       (list nil nil nil))
      ((and callable-p library-name)
       (when src-path
-        (-let [(src-buf src-opened) (helpful--open-if-needed src-path)]
+        (cl-destructuring-bind (src-buf src-opened)
+            (helpful--open-if-needed src-path)
           (setq buf src-buf)
           (setq opened src-opened))
 
@@ -1493,14 +1535,15 @@ buffer."
      (callable-p
       ;; Functions defined interactively may have an edebug property
       ;; that contains the location of the definition.
-      (-when-let (edebug-info (get sym 'edebug))
-        (-let [marker (if (consp edebug-info)
+      (when-let* ((edebug-info (get sym 'edebug)))
+        (let ((marker (if (consp edebug-info)
                           (car edebug-info)
-                        edebug-info)]
+                        edebug-info)))
           (setq buf (marker-buffer marker))
           (setq pos (marker-position marker)))))
      ((and (not callable-p) src-path)
-      (-let [(src-buf src-opened) (helpful--open-if-needed src-path)]
+      (cl-destructuring-bind (src-buf src-opened)
+          (helpful--open-if-needed src-path)
         (setq buf src-buf)
         (setq opened src-opened)
 
@@ -1521,21 +1564,21 @@ buffer."
 
 (defun helpful--reference-positions (sym callable-p buf)
   "Return all the buffer positions of references to SYM in BUF."
-  (-let* ((forms-and-bufs
-           (elisp-refs--search-1
-            (list buf)
-            (lambda (buf)
-              (elisp-refs--read-and-find
-               buf sym
-               (if callable-p
-                   #'elisp-refs--function-p
-                 #'elisp-refs--variable-p)))))
-          ;; Since we only searched one buffer, we know that
-          ;; forms-and-bufs has only one item.
-          (forms-and-buf (-first-item forms-and-bufs))
-          ((forms . _buf) forms-and-buf))
-    (-map
-     (-lambda ((_code start-pos _end-pos)) start-pos)
+  (let* ((forms-and-bufs
+          (elisp-refs--search-1
+           (list buf)
+           (lambda (buf)
+             (elisp-refs--read-and-find
+              buf sym
+              (if callable-p
+                  #'elisp-refs--function-p
+                #'elisp-refs--variable-p)))))
+         ;; Since we only searched one buffer, we know that
+         ;; forms-and-bufs has only one item.
+         (forms-and-buf (car forms-and-bufs))
+         (forms (car forms-and-buf)))
+    (mapcar
+     (lambda (it) (nth 1 it))  ; (_code start-pos _end-pos)
      forms)))
 
 (defun helpful--all-keymap-syms ()
@@ -1564,12 +1607,15 @@ buffer."
          (global-keycodes
           (unless (eq keymap global-map)
             global-keycodes)))
-    (->> keycodes
-         ;; Ignore keybindings from the parent or global map.
-         (--remove (or (-contains-p global-keycodes it)
-                       (-contains-p parent-keycodes it)))
-         ;; Convert raw keycode vectors into human-readable strings.
-         (-map #'key-description))))
+    (thread-last
+      keycodes
+      ;; Ignore keybindings from the parent or global map.
+      (seq-remove
+       (lambda (it)
+         (or (member it global-keycodes)
+             (member it parent-keycodes))))
+      ;; Convert raw keycode vectors into human-readable strings.
+      (mapcar #'key-description))))
 
 (defun helpful--keymaps-containing (command-sym)
   "Return a list of pairs listing keymap names that contain COMMAND-SYM,
@@ -1584,31 +1630,35 @@ from parent keymaps.
 `widget-global-map' is also ignored as it generally contains the
 same bindings as `global-map'."
   (let* ((keymap-syms (helpful--all-keymap-syms))
-         (keymap-sym-vals (-map #'symbol-value keymap-syms))
+         (keymap-sym-vals (mapcar #'symbol-value keymap-syms))
          (global-keycodes (where-is-internal
                            command-sym (list global-map) nil t))
          matching-keymaps)
     ;; Look for this command in all keymaps bound to variables.
-    (-map
-     (-lambda ((keymap-sym . keymap))
-       (let ((key-sequences (helpful--key-sequences command-sym keymap global-keycodes)))
+    (mapc
+     (lambda (it)
+       (let* ((keymap-sym (car it))
+              (keymap (cdr it))
+              (key-sequences (helpful--key-sequences command-sym keymap global-keycodes)))
          (when (and key-sequences (not (eq keymap-sym 'widget-global-map)))
            (push (cons (symbol-name keymap-sym) key-sequences)
                  matching-keymaps))))
-     (-zip-pair keymap-syms keymap-sym-vals))
+     (seq-mapn #'cons keymap-syms keymap-sym-vals))
 
     ;; Look for this command in keymaps used by minor modes that
     ;; aren't bound to variables.
-    (-map
-     (-lambda ((minor-mode . keymap))
+    (mapc
+     (lambda (it)
        ;; Only consider this keymap if we didn't find it bound to a variable.
-       (when (and (keymapp keymap)
-                  (not (memq keymap keymap-sym-vals)))
-         (let ((key-sequences (helpful--key-sequences command-sym keymap global-keycodes)))
-           (when key-sequences
-             (push (cons (format "minor-mode-map-alist (%s)" minor-mode)
-                         key-sequences)
-                   matching-keymaps)))))
+       (let ((minor-mode (car it))
+             (keymap (cdr it)))
+         (when (and (keymapp keymap)
+                    (not (memq keymap keymap-sym-vals)))
+           (let ((key-sequences (helpful--key-sequences command-sym keymap global-keycodes)))
+             (when key-sequences
+               (push (cons (format "minor-mode-map-alist (%s)" minor-mode)
+                           key-sequences)
+                     matching-keymaps))))))
      ;; TODO: examine `minor-mode-overriding-map-alist' too.
      minor-mode-map-alist)
 
@@ -1617,16 +1667,16 @@ same bindings as `global-map'."
 (defun helpful--merge-alists (l1 l2)
   "Given two alists mapping symbols to lists, return a single
 alist with the lists concatenated."
-  (let* ((l1-keys (-map #'-first-item l1))
-         (l2-keys (-map #'-first-item l2))
-         (l2-extra-keys (-difference l2-keys l1-keys))
+  (let* ((l1-keys (mapcar #'car l1))
+         (l2-keys (mapcar #'car l2))
+         (l2-extra-keys (seq-difference l2-keys l1-keys))
          (l2-extra-values
-          (--map (assoc it l2) l2-extra-keys))
+          (mapcar (lambda (it) (assoc it l2)) l2-extra-keys))
          (l1-with-values
-          (-map (-lambda ((key . values))
-                  (cons key (append values
-                                    (cdr (assoc key l2)))))
-                l1)))
+          (mapcar (lambda (it)
+                    (cons (car it) (append (cdr it)
+                                           (cdr (assoc (car it) l2)))))
+                  l1)))
     (append l1-with-values l2-extra-values)))
 
 (defun helpful--keymaps-containing-aliases (command-sym aliases)
@@ -1636,15 +1686,16 @@ keybindings for COMMAND-SYM in each keymap.
 Includes keybindings for aliases, unlike
 `helpful--keymaps-containing'."
   (let* ((syms (cons command-sym aliases))
-         (syms-keymaps (-map #'helpful--keymaps-containing syms)))
-    (-reduce #'helpful--merge-alists syms-keymaps)))
+         (syms-keymaps (mapcar #'helpful--keymaps-containing syms)))
+    (seq-reduce #'helpful--merge-alists (cdr syms-keymaps) (car syms-keymaps))))
 
 (defun helpful--format-keys (command-sym aliases)
   "Describe all the keys that call COMMAND-SYM."
   (let (mode-lines
         global-lines)
-    (--each (helpful--keymaps-containing-aliases command-sym aliases)
-      (-let [(map . keys) it]
+    (dolist (it (helpful--keymaps-containing-aliases command-sym aliases))
+      (let ((map (car it))
+            (keys (cdr it)))
         (dolist (key keys)
           (push
            (format "%s %s"
@@ -1653,11 +1704,11 @@ Includes keybindings for aliases, unlike
                        (propertize key 'face 'help-key-binding)
                      key))
            (if (eq map 'global-map) global-lines mode-lines)))))
-    (setq global-lines (-sort #'string< global-lines))
-    (setq mode-lines (-sort #'string< mode-lines))
-    (-let [lines (-concat global-lines mode-lines)]
+    (setq global-lines (seq-sort #'string< global-lines))
+    (setq mode-lines (seq-sort #'string< mode-lines))
+    (let ((lines (append global-lines mode-lines)))
       (if lines
-          (s-join "\n" lines)
+          (string-join lines "\n")
         "This command is not in any keymaps."))))
 
 (defun helpful--outer-sexp (buf pos)
@@ -1671,14 +1722,14 @@ Moves point in BUF."
            (outer-sexp-posns (nth 9 ppss)))
       (when outer-sexp-posns
         (goto-char (car outer-sexp-posns))))
-    (list (point) (-take 2 (read buf)))))
+    (list (point) (seq-take (read buf) 2))))
 
 (defun helpful--count-values (items)
   "Return an alist of the count of each value in ITEMS.
 E.g. (x x y z y) -> ((x . 2) (y . 2) (z . 1))"
   (let (counts)
     (dolist (item items (nreverse counts))
-      (-if-let (item-and-count (assoc item counts))
+      (if-let* ((item-and-count (assoc item counts)))
           (setcdr item-and-count (1+ (cdr item-and-count)))
         (push (cons item 1) counts)))))
 
@@ -1696,14 +1747,14 @@ without the advice. Assumes function has been loaded."
 (defun helpful--format-head (head)
   "Given a 'head' (the first two symbols of a sexp) format and
 syntax highlight it."
-  (-let* (((def name) head)
-          (formatted-name
-           (if (and (consp name) (eq (car name) 'quote))
-               (format "'%S" (cadr name))
-             (format "%S" name)))
-          (formatted-def
-           (format "(%s %s ...)" def formatted-name))
-          )
+  (let* ((def (car head))
+         (name (cadr head))
+         (formatted-name
+          (if (and (consp name) (eq (car name) 'quote))
+              (format "'%S" (cadr name))
+            (format "%S" name)))
+         (formatted-def
+          (format "(%s %s ...)" def formatted-name)))
     (helpful--syntax-highlight formatted-def)))
 
 (defun helpful--format-reference (head longest-head ref-count position path)
@@ -1715,7 +1766,7 @@ to its source location."
     (propertize
      (format
       "%s %s"
-      (s-pad-right longest-head " " (helpful--format-head head))
+      (string-pad (helpful--format-head head) longest-head)
       (propertize formatted-count 'face 'font-lock-comment-face))
      'helpful-path path
      'helpful-pos position)))
@@ -1724,14 +1775,18 @@ to its source location."
   "Given a list of outer sexps, format them for display.
 POSITION-HEADS takes the form ((123 (defun foo)) (456 (defun bar)))."
   (let ((longest-head
-         (->> position-heads
-              (-map (-lambda ((_pos head)) (helpful--format-head head)))
-              (-map #'length)
-              (-max))))
-    (->> (helpful--count-values position-heads)
-         (-map (-lambda (((pos head) . count))
+         (thread-last position-heads
+                      (mapcar (lambda (it) (helpful--format-head (cadr it))))
+                      (mapcar #'length)
+                      (apply #'max))))
+    (string-join
+     (mapcar (lambda (it)
+               (let ((pos (caar it))
+                     (head (cadr (car it)))
+                     (count (cdr it)))
                  (helpful--format-reference head longest-head count pos path)))
-         (s-join "\n"))))
+             (helpful--count-values position-heads))
+     "\n")))
 
 (defun helpful--primitive-p (sym callable-p)
   "Return t if SYM is defined in C."
@@ -1784,7 +1839,7 @@ POSITION-HEADS takes the form ((123 (defun foo)) (456 (defun bar)))."
           (setq content (buffer-substring (point) (point-max)))))
       (when content
         (helpful--insert-section-break)
-        (insert (helpful--heading "Implementations") (s-trim content))))))
+        (insert (helpful--heading "Implementations") (string-trim content))))))
 
 (defun helpful--calculate-references (sym callable-p source-path)
   "Calculate references for SYM in SOURCE-PATH."
@@ -1796,23 +1851,25 @@ POSITION-HEADS takes the form ((123 (defun foo)) (456 (defun bar)))."
                 nil
               (helpful--reference-positions
                helpful--sym helpful--callable-p buf)))
-           (return-value (--map (helpful--outer-sexp buf it) positions)))
+           (return-value (mapcar (lambda (it) (helpful--outer-sexp buf it)) positions)))
       (kill-buffer buf)
       return-value)))
 
 (defun helpful--make-shortdoc-sentence (sym)
   "Make a line for shortdoc groups of SYM."
   (when (featurep 'shortdoc)
-    (-when-let (groups (--map (helpful--button
-                               (symbol-name it)
-                               'helpful-shortdoc-button
-                               'shortdoc-group it)
-                              (shortdoc-function-groups sym)))
+    (when-let* ((groups (mapcar
+                         (lambda (it)
+                           (helpful--button
+                            (symbol-name it)
+                            'helpful-shortdoc-button
+                            'shortdoc-group it))
+                         (shortdoc-function-groups sym))))
       (if (= 1 (length groups))
           (format "Other relevant functions are documented in the %s group."
                   (car groups))
         (format "Other relevant functions are documented in the %s groups."
-                (concat (s-join ", " (butlast groups))
+                (concat (string-join (butlast groups) ", ")
                         " and " (car (last groups))))))))
 
 (defun helpful--make-manual-button (sym)
@@ -1918,12 +1975,12 @@ OBJ may be a symbol or a compiled function object."
 ;; cookie.
 (defun helpful--autoloaded-p (sym buf)
   "Return non-nil if function SYM is autoloaded."
-  (-when-let (file-name (buffer-file-name buf))
-    (setq file-name (s-chop-suffix ".gz" file-name))
+  (when-let* ((file-name (buffer-file-name buf)))
+    (setq file-name (string-remove-suffix ".gz" file-name))
     (condition-case nil
         (help-fns--autoloaded-p sym file-name)
-      ; new in Emacs 29.0.50
-      ; see https://github.com/Wilfred/helpful/pull/283
+      ;; new in Emacs 29.0.50
+      ;; see https://github.com/Wilfred/helpful/pull/283
       (error (help-fns--autoloaded-p sym)))))
 
 (defun helpful--compiled-p (sym)
@@ -1946,120 +2003,119 @@ OBJ may be a symbol or a compiled function object."
     (car items))
    (t
     (format "%s and %s"
-            (s-join ", " (-drop-last 1 items))
-            (-last-item items)))))
+            (string-join (butlast items) ", ")
+            (car (last items))))))
 
 (defun helpful--summary (sym callable-p buf pos)
   "Return a one sentence summary for SYM."
-  (-let* ((primitive-p (helpful--primitive-p sym callable-p))
-          (canonical-sym (helpful--canonical-symbol sym callable-p))
-          (alias-p (not (eq canonical-sym sym)))
-          (alias-button
-           (if callable-p
-               ;; Show a link to 'defalias' in the manual.
-               (helpful--button
-                "function alias"
-                'helpful-manual-button
-                'symbol 'defalias)
-             ;; Show a link to the variable aliases section in the
-             ;; manual.
-             (helpful--button
-              "alias"
-              'helpful-info-button
-              'info-node "(elisp)Variable Aliases")))
-          (special-form-button
-           (helpful--button
-            "special form"
-            'helpful-info-button
-            'info-node "(elisp)Special Forms"))
-          (user-option-button
-           (helpful--button
-            "customizable"
-            'helpful-info-button
-            'info-node "(elisp)Variable Definitions"))
-          (keyboard-macro-button
-           (helpful--button
-            "keyboard macro"
-            'helpful-info-button
-            'info-node "(elisp)Keyboard Macros"))
-          (interactive-button
-           (helpful--button
-            "interactive"
-            'helpful-info-button
-            'info-node "(elisp)Using Interactive"))
-          (autoload-button
-           (helpful--button
-            "autoloaded"
-            'helpful-info-button
-            'info-node "(elisp)Autoload"))
-          (compiled-button
-           (helpful--button
-            "byte-compiled"
-            'helpful-info-button
-            'info-node "(elisp)Byte Compilation"))
-          (native-compiled-button
-           (helpful--button
-            "natively compiled"
-            'helpful-describe-button
-            'symbol 'native-compile))
-          (buffer-local-button
-           (helpful--button
-            "buffer-local"
-            'helpful-info-button
-            'info-node "(elisp)Buffer-Local Variables"))
-          (autoloaded-p
-           (and callable-p buf (helpful--autoloaded-p sym buf)))
-          (compiled-p
-           (and callable-p (helpful--compiled-p sym)))
-          (native-compiled-p
-           (and callable-p (helpful--native-compiled-p sym)))
-          (buttons
-           (list
-            (if alias-p alias-button)
-            (if (and callable-p autoloaded-p) autoload-button)
-            (if (and callable-p (commandp sym)) interactive-button)
-            (if compiled-p compiled-button)
-            (if native-compiled-p native-compiled-button)
-            (if (and (not callable-p) (custom-variable-p sym))
-                user-option-button)
-            (if (and (not callable-p) (local-variable-if-set-p sym))
-                buffer-local-button)))
-          (description
-           (helpful--join-and (-non-nil buttons)))
-          (kind
-           (cond
-            ((special-form-p sym)
-             special-form-button)
-            (alias-p
-             (format "for %s,"
-                     (helpful--button
-                      (symbol-name canonical-sym)
-                      'helpful-describe-exactly-button
-                      'symbol canonical-sym
-                      'callable-p callable-p)))
-            ((not callable-p) "variable")
-            ((macrop sym) "macro")
-            ((helpful--kbd-macro-p sym) keyboard-macro-button)
-            (t "function")))
-          (defined
-            (cond
-             (buf
-              (let ((path (buffer-file-name buf)))
-                (if path
-                    (format
-                     "defined in %s"
-                     (helpful--navigate-button
-                      (file-name-nondirectory path) path pos))
-                  (format "defined in buffer %s"
-                          (helpful--buffer-button buf pos)))))
-             (primitive-p
-              "defined in C source code")
-             ((helpful--kbd-macro-p sym) nil)
-             (t
-              "without a source file"))))
+  (let* ((primitive-p (helpful--primitive-p sym callable-p))
+         (canonical-sym (helpful--canonical-symbol sym callable-p))
+         (alias-p (not (eq canonical-sym sym)))
+         (alias-button
+          (if callable-p
+              ;; Show a link to 'defalias' in the manual.
+              (helpful--button
+               "function alias"
+               'helpful-manual-button
+               'symbol 'defalias)
+            ;; Show a link to the variable aliases section in the
+            ;; manual.
+            (helpful--button
+             "alias"
+             'helpful-info-button
+             'info-node "(elisp)Variable Aliases")))
+         (special-form-button
+          (helpful--button
+           "special form"
+           'helpful-info-button
+           'info-node "(elisp)Special Forms"))
+         (user-option-button
+          (helpful--button
+           "customizable"
+           'helpful-info-button
+           'info-node "(elisp)Variable Definitions"))
+         (keyboard-macro-button
+          (helpful--button
+           "keyboard macro"
+           'helpful-info-button
+           'info-node "(elisp)Keyboard Macros"))
+         (interactive-button
+          (helpful--button
+           "interactive"
+           'helpful-info-button
+           'info-node "(elisp)Using Interactive"))
+         (autoload-button
+          (helpful--button
+           "autoloaded"
+           'helpful-info-button
+           'info-node "(elisp)Autoload"))
+         (compiled-button
+          (helpful--button
+           "byte-compiled"
+           'helpful-info-button
+           'info-node "(elisp)Byte Compilation"))
+         (native-compiled-button
+          (helpful--button
+           "natively compiled"
+           'helpful-describe-button
+           'symbol 'native-compile))
+         (buffer-local-button
+          (helpful--button
+           "buffer-local"
+           'helpful-info-button
+           'info-node "(elisp)Buffer-Local Variables"))
+         (autoloaded-p
+          (and callable-p buf (helpful--autoloaded-p sym buf)))
+         (compiled-p
+          (and callable-p (helpful--compiled-p sym)))
+         (native-compiled-p
+          (and callable-p (helpful--native-compiled-p sym)))
+         (buttons
+          (list
+           (if alias-p alias-button)
+           (if (and callable-p autoloaded-p) autoload-button)
+           (if (and callable-p (commandp sym)) interactive-button)
+           (if compiled-p compiled-button)
+           (if native-compiled-p native-compiled-button)
+           (if (and (not callable-p) (custom-variable-p sym))
+               user-option-button)
+           (if (and (not callable-p) (local-variable-if-set-p sym))
+               buffer-local-button)))
+         (description
+          (helpful--join-and (remq nil buttons)))
+         (kind
+          (cond
+           ((special-form-p sym)
+            special-form-button)
+           (alias-p
+            (format "for %s,"
+                    (helpful--button
+                     (symbol-name canonical-sym)
+                     'helpful-describe-exactly-button
+                     'symbol canonical-sym
+                     'callable-p callable-p)))
+           ((not callable-p) "variable")
+           ((macrop sym) "macro")
+           ((helpful--kbd-macro-p sym) keyboard-macro-button)
+           (t "function")))
+         (defined
+          (cond
+           (buf
+            (let ((path (buffer-file-name buf)))
+              (if path
+                  (format
+                   "defined in %s"
+                   (helpful--navigate-button
+                    (file-name-nondirectory path) path pos))
+                (format "defined in buffer %s"
+                        (helpful--buffer-button buf pos)))))
+           (primitive-p
+            "defined in C source code")
+           ((helpful--kbd-macro-p sym) nil)
+           (t
+            "without a source file"))))
 
-    (s-word-wrap
-     70
+    (string-fill
      (format "%s is %s %s %s%s."
              (if (symbolp sym)
                  (helpful--format-symbol sym)
@@ -2071,7 +2127,8 @@ OBJ may be a symbol or a compiled function object."
                "a")
              description
              kind
-             (if defined (concat " " defined) "")))))
+             (if defined (concat " " defined) ""))
+     70)))
 
 (defun helpful--callees (form)
   "Given source code FORM, return a list of all the functions called."
@@ -2080,9 +2137,9 @@ OBJ may be a symbol or a compiled function object."
          (all-fns (helpful--callees-1 expanded-form))
          ;; Only consider the functions that were in the original code
          ;; before macro expansion.
-         (form-syms (-filter #'symbolp (-flatten form)))
-         (form-fns (--filter (memq it form-syms) all-fns)))
-    (-distinct form-fns)))
+         (form-syms (seq-filter #'symbolp (flatten-list form)))
+         (form-fns (seq-filter (lambda (it) (memq it form-syms)) all-fns)))
+    (seq-uniq form-fns)))
 
 (defun helpful--callees-1 (form)
   "Return a list of all the functions called in FORM.
@@ -2097,28 +2154,31 @@ may contain duplicates."
                            or prog1 prog2 progn save-current-buffer
                            save-restriction setq setq-default
                            track-mouse unwind-protect while))
-    (-flatten
-     (-map #'helpful--callees-1 (cdr form))))
+    (flatten-list
+     (mapcar #'helpful--callees-1 (cdr form))))
 
    ((eq (car form) 'cond)
     (let* ((clauses (cdr form))
            (clause-fns
             ;; Each clause is a list of forms.
-            (--map
-             (-map #'helpful--callees-1 it) clauses)))
-      (-flatten clause-fns)))
+            (mapcar (lambda (it)
+                      (mapcar #'helpful--callees-1 it))
+                    clauses)))
+      (flatten-list clause-fns)))
 
    ((eq (car form) 'condition-case)
     (let* ((protected-form (nth 2 form))
            (protected-form-fns (helpful--callees-1 protected-form))
-           (handlers (-drop 3 form))
-           (handler-bodies (-map #'cdr handlers))
+           (handlers (seq-drop form 3))
+           (handler-bodies (mapcar #'cdr handlers))
            (handler-fns
-            (--map
-             (-map #'helpful--callees-1 it) handler-bodies)))
+            (mapcar
+             (lambda (it)
+               (mapcar #'helpful--callees-1 it))
+             handler-bodies)))
       (append
        protected-form-fns
-       (-flatten handler-fns))))
+       (flatten-list handler-fns))))
 
    ;; Calling a function with a well known higher order function, for
    ;; example (funcall 'foo 1 2).
@@ -2128,8 +2188,8 @@ may contain duplicates."
      (eq (car-safe (nth 1 form)) 'quote))
     (cons
      (cadr (nth 1 form))
-     (-flatten
-      (-map #'helpful--callees-1 (cdr form)))))
+     (flatten-list
+      (mapcar #'helpful--callees-1 (cdr form)))))
 
    ((eq (car form) 'function)
     (let ((arg (nth 1 form)))
@@ -2142,34 +2202,35 @@ may contain duplicates."
 
    ((eq (car form) 'lambda)
     ;; Only consider the body, not the param list.
-    (-flatten (-map #'helpful--callees-1 (-drop 2 form))))
+    (flatten-list (mapcar #'helpful--callees-1 (seq-drop form 2))))
 
    ((eq (car form) 'closure)
     ;; Same as lambda, but has an additional argument of the
     ;; closed-over variables.
-    (-flatten (-map #'helpful--callees-1 (-drop 3 form))))
+    (flatten-list (mapcar #'helpful--callees-1 (seq-drop form 3))))
 
    ((memq (car form) '(let let*))
     ;; Extract function calls used to set the let-bound variables.
-    (let* ((var-vals (-second-item form))
+    (let* ((var-vals (cadr form))
            (var-val-callees
-            (--map
-             (if (consp it)
-                 (-map #'helpful--callees-1 it)
-               nil)
+            (mapcar
+             (lambda (it)
+               (if (consp it)
+                   (mapcar #'helpful--callees-1 it)
+                 nil))
              var-vals)))
       (append
-       (-flatten var-val-callees)
+       (flatten-list var-val-callees)
        ;; Function calls in the let body.
-       (-map #'helpful--callees-1 (-drop 2 form)))))
+       (mapcar #'helpful--callees-1 (seq-drop form 2)))))
 
    ((eq (car form) 'quote)
     nil)
    (t
     (cons
      (car form)
-     (-flatten
-      (-map #'helpful--callees-1 (cdr form)))))))
+     (flatten-list
+      (mapcar #'helpful--callees-1 (cdr form)))))))
 
 (defun helpful--ensure-loaded ()
   "Ensure the symbol associated with the current buffer has been loaded."
@@ -2183,10 +2244,10 @@ may contain duplicates."
   "Does SYMBOL look like a hook?"
   (and
    (or
-    (s-ends-with-p "-hook" (symbol-name symbol))
+    (string-suffix-p "-hook" (symbol-name symbol))
     ;; E.g. `after-change-functions', which can be used with
     ;; `add-hook'.
-    (s-ends-with-p "-functions" (symbol-name symbol)))
+    (string-suffix-p "-functions" (symbol-name symbol)))
    (consp value)))
 
 (defun helpful--format-value (sym value)
@@ -2234,30 +2295,32 @@ state of the current symbol."
   (unless (buffer-live-p helpful--associated-buffer)
     (setq helpful--associated-buffer nil))
   (helpful--ensure-loaded)
-  (-let* ((val
-           ;; Look at the value before setting `inhibit-read-only', so
-           ;; users can see the correct value of that variable.
-           (unless helpful--callable-p
-             (helpful--sym-value helpful--sym helpful--associated-buffer)))
-          (inhibit-read-only t)
-          (start-line (line-number-at-pos))
-          (start-column (current-column))
-          (primitive-p (helpful--primitive-p helpful--sym helpful--callable-p))
-          (canonical-sym (helpful--canonical-symbol helpful--sym helpful--callable-p))
-          (look-for-src (or (not primitive-p)
-                            find-function-C-source-directory))
-          ((buf pos opened)
-           (if look-for-src
-               (helpful--definition helpful--sym helpful--callable-p)
-             '(nil nil nil)))
-          (source (when look-for-src
-                    (helpful--source helpful--sym helpful--callable-p buf pos)))
-          (source-path (when buf
-                         (buffer-file-name buf)))
-          (references (helpful--calculate-references
-                       helpful--sym helpful--callable-p
-                       source-path))
-          (aliases (helpful--aliases helpful--sym helpful--callable-p)))
+  (let* ((val
+          ;; Look at the value before setting `inhibit-read-only', so
+          ;; users can see the correct value of that variable.
+          (unless helpful--callable-p
+            (helpful--sym-value helpful--sym helpful--associated-buffer)))
+         (inhibit-read-only t)
+         (start-line (line-number-at-pos))
+         (start-column (current-column))
+         (primitive-p (helpful--primitive-p helpful--sym helpful--callable-p))
+         (canonical-sym (helpful--canonical-symbol helpful--sym helpful--callable-p))
+         (look-for-src (or (not primitive-p)
+                           find-function-C-source-directory))
+         (def (if look-for-src
+                  (helpful--definition helpful--sym helpful--callable-p)
+                '(nil nil nil)))
+         (buf (nth 0 def))
+         (pos (nth 1 def))
+         (opened (nth 2 def))
+         (source (when look-for-src
+                   (helpful--source helpful--sym helpful--callable-p buf pos)))
+         (source-path (when buf
+                        (buffer-file-name buf)))
+         (references (helpful--calculate-references
+                      helpful--sym helpful--callable-p
+                      source-path))
+         (aliases (helpful--aliases helpful--sym helpful--callable-p)))
 
     (erase-buffer)
 
@@ -2350,7 +2413,7 @@ state of the current symbol."
         (when docstring
           (insert (helpful--format-docstring docstring)))
         (when version-info
-          (insert "\n\n" (s-word-wrap 70 version-info)))
+          (insert "\n\n" (string-fill version-info 70)))
         (when (and (symbolp helpful--sym)
                    helpful--callable-p
                    (helpful--has-shortdoc-p helpful--sym))
@@ -2387,7 +2450,7 @@ state of the current symbol."
         ((and source-path primitive-p)
          (format
           "Finding references in a .%s file is not supported."
-          (f-ext source-path)))
+          (file-name-extension source-path)))
         (source-path
          (format "%s is unused in %s."
                  helpful--sym
@@ -2458,8 +2521,9 @@ state of the current symbol."
       (helpful--insert-section-break)
       (insert
        (helpful--heading "Aliases")
-       (s-join "\n" (--map (helpful--format-alias it helpful--callable-p)
-                           aliases))))
+       (string-join (mapcar (lambda (it) (helpful--format-alias it helpful--callable-p))
+                            aliases)
+                    "\n")))
 
     (when helpful--callable-p
       (helpful--insert-implementations))
@@ -2478,7 +2542,7 @@ state of the current symbol."
           (propertize (format "%s Defined in " (if primitive-p "//" ";;"))
                       'face 'font-lock-comment-face)
           (helpful--navigate-button
-           (f-abbrev source-path)
+           (abbreviate-file-name source-path)
            source-path
            pos)
           "\n"))
@@ -2515,7 +2579,7 @@ state of the current symbol."
 
     (helpful--insert-section-break)
 
-    (-when-let (formatted-props (helpful--format-properties helpful--sym))
+    (when-let* ((formatted-props (helpful--format-properties helpful--sym)))
       (insert
        (helpful--heading "Symbol Properties")
        formatted-props))
@@ -2531,20 +2595,21 @@ state of the current symbol."
 ;; TODO: this isn't sufficient for `edebug-eval-defun'.
 (defun helpful--skip-advice (docstring)
   "Remove mentions of advice from DOCSTRING."
-  (let* ((lines (s-lines docstring))
+  (let* ((lines (split-string docstring "\\(\r\n\\|[\n\r]\\)"))
          (relevant-lines
-          (--drop-while
-           (or (s-starts-with-p ":around advice:" it)
-               (s-starts-with-p "This function has :around advice:" it))
+          (seq-drop-while
+           (lambda (it)
+             (or (string-prefix-p ":around advice:" it)
+                 (string-prefix-p "This function has :around advice:" it)))
            lines)))
-    (s-trim (s-join "\n" relevant-lines))))
+    (string-trim (string-join relevant-lines "\n"))))
 
 (defun helpful--format-argument (arg)
   "Format ARG (a symbol) according to Emacs help conventions."
   (let ((arg-str (symbol-name arg)))
-    (if (s-starts-with-p "&" arg-str)
+    (if (string-prefix-p "&" arg-str)
         arg-str
-      (s-upcase arg-str))))
+      (upcase arg-str))))
 
 (defun helpful--format-symbol (sym)
   "Format symbol as a string, escaping as necessary."
@@ -2552,7 +2617,7 @@ state of the current symbol."
   ;; (format "%S" sym)
   ;; but that converts foo? to "foo\\?". You can see this in other
   ;; parts of the Emacs UI, such as ERT.
-  (s-replace " " "\\ " (format "%s" sym)))
+  (replace-regexp-in-string " " "\\ " (format "%s" sym) t t))
 
 ;; TODO: this is broken for -any?.
 (defun helpful--signature (sym)
@@ -2583,9 +2648,9 @@ For example, \"(some-func FOO &optional BAR)\"."
            (formatted-args
             (cond
              (advertised-args
-              (-map #'helpful--format-argument advertised-args))
+              (mapcar #'helpful--format-argument advertised-args))
              ((listp function-args)
-              (-map #'helpful--format-argument function-args))
+              (mapcar #'helpful--format-argument function-args))
              (t
               (list function-args)))))
       (setq source-sig
@@ -2593,19 +2658,19 @@ For example, \"(some-func FOO &optional BAR)\"."
              ;; If it's a function object, just show the arguments.
              ((not (symbolp sym))
               (format "(%s)"
-                      (s-join " " formatted-args)))
+                      (string-join formatted-args " ")))
              ;; If it has multiple arguments, join them with spaces.
              (formatted-args
               (format "(%s %s)"
                       (helpful--format-symbol sym)
-                      (s-join " " formatted-args)))
+                      (string-join formatted-args " ")))
              ;; Otherwise, this function takes no arguments when called.
              (t
               (format "(%s)" (helpful--format-symbol sym))))))
 
     ;; If the docstring ends with (fn FOO BAR), extract that.
-    (-when-let (docstring (documentation sym))
-      (-when-let (docstring-with-usage (help-split-fundoc docstring sym))
+    (when-let* ((docstring (documentation sym)))
+      (when-let* ((docstring-with-usage (help-split-fundoc docstring sym)))
         (setq docstring-sig (car docstring-with-usage))))
 
     (cond
@@ -2621,17 +2686,17 @@ For example, \"(some-func FOO &optional BAR)\"."
       source-sig))))
 
 (defun helpful--format-obsolete-info (sym callable-p)
-  (-let [(use _ date) (helpful--obsolete-info sym callable-p)]
+  (cl-destructuring-bind (use _ date) (helpful--obsolete-info sym callable-p)
     (helpful--format-docstring
-     (s-word-wrap
-      70
+     (string-fill
       (format "This %s is obsolete%s%s"
               (helpful--kind-name sym callable-p)
               (if date (format " since %s" date)
                 "")
               (cond ((stringp use) (concat "; " use))
                     (use (format "; use `%s' instead." use))
-                    (t ".")))))))
+                    (t ".")))
+      70))))
 
 (defun helpful--docstring (sym callable-p)
   "Get the docstring for SYM.
@@ -2642,7 +2707,7 @@ escapes that are used by `substitute-command-keys'."
     (if callable-p
         (progn
           (setq docstring (documentation sym t))
-          (-when-let (docstring-with-usage (help-split-fundoc docstring sym))
+          (when-let* ((docstring-with-usage (help-split-fundoc docstring sym)))
             (setq docstring (cdr docstring-with-usage))
             (when docstring
               ;; Advice mutates the docstring, see
@@ -2788,11 +2853,11 @@ SYMBOL as variable name if VAR, else a function name. Return
 nil if SYMBOL doesn't begin with \"F\" or \"V\"."
   (let ((string (symbol-name symbol))
         (prefix (if var "V" "F")))
-    (when (s-starts-with-p prefix string)
+    (when (string-prefix-p prefix string)
       (intern
-       (s-chop-prefix
+       (string-remove-prefix
         prefix
-        (s-replace "_" "-" string))))))
+        (replace-regexp-in-string "_" "-" string t t))))))
 
 (defun helpful--disambiguate (sym choices)
   "Prompt the user to disambiguate SYM via a `read-char-choice' selection.
@@ -2807,11 +2872,11 @@ For instance, the choice (#'helpful-variable \"[v]ariable\" ?v)
 calls (helpful-variable SYM) when the key `v' is pressed in the prompt."
   (let* ((prompt (format "%s is ambiguous: describe %s ?"
                          (propertize (symbol-name sym) 'face font-lock-keyword-face)
-                         (mapconcat (-lambda ((_ desc _)) desc)
+                         (mapconcat (lambda (it) (nth 1 it))
                                     choices " / ")))
-         (chars (mapcar (-lambda ((_ _ char)) char)
+         (chars (mapcar (lambda (it) (nth 2 it))
                         choices))
-         (lookup (mapcar (-lambda ((fn _ char)) (cons char fn))
+         (lookup (mapcar (lambda (it) (cons (nth 0 it) (nth 2 it)))
                          choices))
          (input (read-char-choice prompt chars)))
     (funcall (alist-get input lookup) sym)))
@@ -2827,11 +2892,11 @@ See also `helpful-callable' and `helpful-variable'."
           (helpful--symbol-at-point)
           #'helpful--bound-p)))
   (let (choices)
-    (when-let (c-var-sym (helpful--convert-c-name symbol t))
+    (when-let* ((c-var-sym (helpful--convert-c-name symbol t)))
       (push (list (lambda (_) (helpful-variable c-var-sym))
                   "c-style [V]ariable" ?V)
             choices))
-    (when-let (c-fn-sym (helpful--convert-c-name symbol nil))
+    (when-let* ((c-fn-sym (helpful--convert-c-name symbol nil)))
       (push (list (lambda (_) (helpful-callable c-fn-sym))
                   "c-style [F]unction" ?F)
             choices))
@@ -2924,7 +2989,7 @@ Returns nil if nothing found."
 (defun helpful-at-point ()
   "Show help for the symbol at point."
   (interactive)
-  (-if-let (symbol (helpful--symbol-at-point))
+  (if-let* ((symbol (helpful--symbol-at-point)))
       (helpful-symbol symbol)
     (user-error "There is no symbol at point.")))
 
@@ -3029,7 +3094,7 @@ See also `helpful-max-buffers'."
 (defun helpful--support-storing-org-links ()
   "Make `org-store-link' in a helpful buffer return a \"help\" link."
   (when (and (fboundp 'org-link-set-parameters)
-             (not (-contains-p (org-link-types) "helpful")))
+             (not (member "helpful" (org-link-types))))
     (org-link-set-parameters "helpful"
                              :store #'helpful--org-link-store)))
 
