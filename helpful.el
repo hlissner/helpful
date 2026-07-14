@@ -244,7 +244,7 @@ settings changed by the user.")
         ;; or it breaks indentation.
         (setq docstring
               (replace-regexp-in-string
-               (regexp-quote "\n(") "\n\\(" docstring t t)))
+               "\n(" "\n\\(" docstring t t)))
       (if docstring
           `(defun ,sym ,args ,docstring ,@body)
         `(defun ,sym ,args ,@body)))))
@@ -1109,7 +1109,7 @@ unescaping too."
                 (progn
                   (setq contents (buffer-substring start-pos end-pos))
                   (delete-region start-pos end-pos)
-                  (insert (replace-regexp-in-string "\\" "\\\\" contents t t)))
+                  (insert (replace-regexp-in-string (regexp-quote "\\") "\\\\" contents t t)))
               (forward-char 1))))
          ((looking-at
            ;; Text of the form \=X
