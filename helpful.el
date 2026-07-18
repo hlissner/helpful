@@ -2898,7 +2898,7 @@ calls (helpful-variable SYM) when the key `v' is pressed in the prompt."
                                     choices " / ")))
          (chars (mapcar (lambda (it) (nth 2 it))
                         choices))
-         (lookup (mapcar (lambda (it) (cons (nth 0 it) (nth 2 it)))
+         (lookup (mapcar (lambda (it) (cons (nth 2 it) (nth 0 it)))
                          choices))
          (input (read-char-choice prompt chars)))
     (funcall (alist-get input lookup) sym)))
