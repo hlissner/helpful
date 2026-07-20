@@ -1383,7 +1383,12 @@ Return nil otherwise."
        (emacs-version
         (format
          "This variable was added, or its default value changed, in Emacs %s."
-         emacs-version))))))
+         emacs-version))
+       ((when-let* ((type (if helpful--callable-p 'fun 'var))
+                    (first (or (help-fns--first-release-override sym type)
+                               (help-fns--first-release sym))))
+          (format "Probably introduced at or before Emacs version %s."
+                  first)))))))
 
 (defun helpful--library-path (library-name)
   "Find the absolute path for the source of LIBRARY-NAME.
@@ -2424,8 +2429,7 @@ state of the current symbol."
           (insert " " (helpful--make-customize-button helpful--sym)))))
 
     (let ((docstring (helpful--docstring helpful--sym helpful--callable-p))
-          (version-info (unless helpful--callable-p
-                          (helpful--version-info helpful--sym))))
+          (version-info (helpful--version-info helpful--sym)))
       (when (or docstring version-info)
         (helpful--insert-section-break)
         (insert
