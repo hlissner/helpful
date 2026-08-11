@@ -1385,7 +1385,8 @@ Return nil otherwise."
          "This variable was added, or its default value changed, in Emacs %s."
          emacs-version))
        ((when-let* ((type (if helpful--callable-p 'fun 'var))
-                    (first (or (help-fns--first-release-override sym type)
+                    (first (or (if (fboundp 'help-fns--first-release-override)
+                                   (help-fns--first-release-override sym type))
                                (help-fns--first-release sym))))
           (format "Probably introduced at or before Emacs version %s."
                   first)))))))
