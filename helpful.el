@@ -146,6 +146,12 @@ buffer."
   :type 'function
   :group 'helpful)
 
+(defcustom helpful-demos-files
+  (list (expand-file-name "helpful-demos.org" (file-name-directory (or load-file-name buffer-file-name))))
+  "TODO"
+  :group 'helpful
+  :type '(repeat file))
+
 ;; TODO: explore whether more basic highlighting is fast enough to
 ;; handle larger functions. See `c-font-lock-init' and its use of
 ;; font-lock-keywords-1.
@@ -2952,6 +2958,45 @@ BACKWARD and LOOKING-AT."
   ;; time the major mode is used.
   (helpful--add-support-for-org-links))
 
+(defun helpful--find-demos (symbol)
+  (catch 'result
+    (dolist (file helpful-demos-files)
+      (when (file-exists-p file)
+        (with-temp-buffer
+          (insert-file-contents file)
+          (save-match-data
+            (when (let (case-fold-search)
+                    (re-search-forward
+                     (format "^\\(\\*+\\) %s\\(?: \\|$\\)" (regexp-quote (symbol-name symbol)))
+                     nil t))
+              (let ((case-fold-search t)
+                    beg end results)
+                (forward-line 1)
+                (setq beg (point)
+                      end (save-excursion
+                            (if (re-search-forward "^\\*" nil t)
+                                (line-beginning-position)
+                              (point-max))))
+                (while (re-search-forward "^#\\+begin_src e\\(?:macs-\\)?lisp\\(?: \\|$\\)" end t)
+                  (push (cons (propertize
+                               (string-trim
+                                (buffer-substring-no-properties
+                                 (line-beginning-position 2)
+                                 (progn (re-search-forward "^#\\+end_src" end t)
+                                        (line-beginning-position))))
+                               'file file
+                               'pos beg)
+                              (when (looking-at-p "\n\n#\\+RESULTS:")
+                                (forward-line 3)
+                                (when-let* ((beg (point))
+                                            (end (or (re-search-forward "^\\(\\*\\|#\\+begin_src\\)" end t)
+                                                     (goto-char end))))
+                                  (string-trim (buffer-substring-no-properties
+                                                beg (line-beginning-position))))))
+                        results))
+                (when results
+                  (throw 'result results))))))))))
+
 
 ;;
 ;;; * Helpful sections
@@ -3118,6 +3163,29 @@ For `helpful-update-functions'."
                (not primitive-p))
       (insert " " (helpful--make-callees-button symbol source)))))
 
+(defun helpful-insert-demos (symbol callable? &rest _plist)
+  "Insert demos for CALLABLE SYMs in the current helpful buffer.
+
+For `helpful-update-functions'."
+  (when-let* ((demos (and (symbolp symbol)
+                          callable?
+                          (helpful--find-demos symbol))))
+    (helpful--insert-section-break)
+    (insert (helpful--heading "Demos"))
+    (dolist (demo demos)
+      (when (and demo (not (string= (car demo) "")))
+        (insert
+         (propertize (helpful--syntax-highlight (car demo))
+                     'start (point)
+                     'symbol symbol))
+        (when (cdr demo)
+          (insert (propertize "\n\n#+RESULT:\n" 'face 'font-lock-doc-face)
+                  (propertize (cdr demo)
+                              'face 'font-lock-constant-face
+                              'start (point)
+                              'symbol symbol)
+                  "\n"))))))
+
 (cl-defun helpful-insert-debugging-buttons (symbol callable? &key
                                                    buffer
                                                    position
@@ -3254,7 +3322,8 @@ For `helpful-update-functions'."
 (add-hook 'helpful-update-functions #'helpful-insert-docs 20)
 (add-hook 'helpful-update-functions #'helpful-insert-keybindings 25)
 (add-hook 'helpful-update-functions #'helpful-insert-references 30)
-(add-hook 'helpful-update-functions #'helpful-insert-debugging-buttons 40)
+(add-hook 'helpful-update-functions #'helpful-insert-demos 40)
+(add-hook 'helpful-update-functions #'helpful-insert-debugging-buttons 50)
 (add-hook 'helpful-update-functions #'helpful-insert-aliases 60)
 (add-hook 'helpful-update-functions #'helpful-insert-implementations 70)
 (add-hook 'helpful-update-functions #'helpful-insert-source-code 80)
