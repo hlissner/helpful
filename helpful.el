@@ -3181,6 +3181,11 @@ BACKWARD and LOOKING-AT."
   "Major mode for *Helpful* buffers."
   (add-hook 'xref-backend-functions #'elisp--xref-backend nil t)
 
+  ;; Elisp code using tab indentation always use a tab-width of 8. C source code
+  ;; from Emacs also use a tab-width of 8. Therefore 8 is a more reasonable
+  ;; tab-width for source code it displays, which may contain tabs.
+  (setq-local tab-width 8)
+
   (setq imenu-create-index-function #'helpful--imenu-index)
   ;; Prevent imenu converting "Source Code" to "Source.Code".
   (setq-local imenu-space-replacement " ")
