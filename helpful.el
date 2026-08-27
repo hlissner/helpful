@@ -124,6 +124,16 @@ To disable cleanup entirely, set this variable to nil. See also
   :type '(choice (const nil) number)
   :group 'helpful)
 
+(defcustom helpful-update-functions ()
+  "A list of functions executed in helpful buffers to construct the buffer.
+
+Each is responsible for its own whitespace and heading. Each take four
+arguments: the symbol being looked up, a boolean denoting if the symbol is
+callable, the helpful buffer, and the buffer associated with the helpful
+buffer."
+  :type 'hook
+  :group 'helpful)
+
 (defcustom helpful-switch-buffer-function
   #'pop-to-buffer
   "Function called to display the *Helpful* buffer."
@@ -1856,21 +1866,6 @@ POSITION-HEADS takes the form ((123 (defun foo)) (456 (defun bar)))."
   "Insert section break into helpful buffer."
   (insert "\n\n"))
 
-(defun helpful--insert-implementations ()
-  "When `helpful--sym' is a generic method, insert its implementations."
-  (let ((func helpful--sym)
-        (content))
-    (when (fboundp #'cl--generic-describe)
-      (with-temp-buffer
-        (declare-function cl--generic-describe "cl-generic" (function))
-        (cl--generic-describe func)
-        (goto-char (point-min))
-        (when (re-search-forward "^Implementations:$" nil t)
-          (setq content (buffer-substring (point) (point-max)))))
-      (when content
-        (helpful--insert-section-break)
-        (insert (helpful--heading "Implementations") (string-trim content))))))
-
 (defun helpful--calculate-references (sym callable-p source-path)
   "Calculate references for SYM in SOURCE-PATH."
   (when source-path
@@ -2349,271 +2344,22 @@ state of the current symbol."
                      (helpful--source helpful--sym helpful--callable-p buf pos)))
            (source-path (when buf
                           (buffer-file-name buf)))
-           (references (helpful--calculate-references
-                        helpful--sym helpful--callable-p
-                        source-path))
            (aliases (helpful--aliases helpful--sym helpful--callable-p)))
 
       (erase-buffer)
 
-      (insert (helpful--summary helpful--sym helpful--callable-p buf pos))
-
-      (when (helpful--obsolete-info helpful--sym helpful--callable-p)
-        (insert
-         "\n\n"
-         (helpful--format-obsolete-info helpful--sym helpful--callable-p)))
-
-      (when (and helpful--callable-p
-                 (not (helpful--kbd-macro-p helpful--sym)))
-        (helpful--insert-section-break)
-        (insert
-         (helpful--heading "Signature")
-         (helpful--syntax-highlight (helpful--signature helpful--sym))))
-
-      (when (not helpful--callable-p)
-        (helpful--insert-section-break)
-        (let* ((sym helpful--sym)
-               (multiple-views-p
-                (or (stringp val)
-                    (keymapp val)
-                    (helpful--hook-p sym val))))
-          (when helpful--first-display
-            (if (stringp val)
-                ;; For strings, it's more intuitive to display them as
-                ;; literals, so "1" and 1 are distinct.
-                (setq helpful--view-literal t)
-              ;; For everything else, prefer the pretty view if available.
-              (setq helpful--view-literal nil)))
-          (insert
-           (helpful--heading
-            (cond
-             ;; Buffer-local variable and we're looking at the value in
-             ;; a specific buffer.
-             ((and
-               helpful--associated-buffer
-               (local-variable-p sym helpful--associated-buffer))
-              (format "Value in %s"
-                      (helpful--button
-                       (format "#<buffer %s>" (buffer-name helpful--associated-buffer))
-                       'helpful-buffer-button
-                       'buffer helpful--associated-buffer
-                       'position pos)))
-             ;; Buffer-local variable but default/global value.
-             ((local-variable-if-set-p sym)
-              "Global Value")
-             ;; This variable is not buffer-local.
-             (t "Value")))
-           (helpful--format-value sym val)
-           "\n\n")
-          (when (helpful--original-value-differs-p sym)
-            (insert
-             (helpful--heading "Original Value")
-             (helpful--format-value
-              sym
-              (car (helpful--original-value sym)))
-             "\n\n"))
-          (when multiple-views-p
-            (insert (helpful--make-toggle-literal-button) " "))
-
-          (when (local-variable-if-set-p sym)
-            (insert
-             (helpful--button
-              "Buffer values"
-              'helpful-associated-buffer-button
-              'symbol sym
-              'prompt-p t)
-             " "
-             (helpful--button
-              "Global value"
-              'helpful-associated-buffer-button
-              'symbol sym
-              'prompt-p nil)
-             " "))
-          (when (memq (helpful--sym-value helpful--sym helpful--associated-buffer) '(nil t))
-            (insert (helpful--make-toggle-button helpful--sym helpful--associated-buffer) " "))
-          (insert (helpful--make-set-button helpful--sym helpful--associated-buffer))
-          (when (custom-variable-p helpful--sym)
-            (insert " " (helpful--make-customize-button helpful--sym)))))
-
-      (let ((docstring (helpful--docstring helpful--sym helpful--callable-p))
-            (version-info (helpful--version-info helpful--sym)))
-        (when (or docstring version-info)
-          (helpful--insert-section-break)
-          (insert
-           (helpful--heading "Documentation"))
-          (when docstring
-            (insert (helpful--format-docstring docstring)))
-          (when version-info
-            (insert "\n\n" (string-fill version-info 70)))
-          (when (and (symbolp helpful--sym)
-                     helpful--callable-p
-                     (helpful--has-shortdoc-p helpful--sym))
-            (insert "\n\n")
-            (insert (helpful--make-shortdoc-sentence helpful--sym)))
-          (when (and (symbolp helpful--sym) (helpful--in-manual-p helpful--sym))
-            (insert "\n\n")
-            (insert (helpful--make-manual-button helpful--sym)))))
-
-      ;; Show keybindings.
-      ;; TODO: allow users to conveniently add and remove keybindings.
-      (when (commandp helpful--sym)
-        (helpful--insert-section-break)
-        (insert
-         (helpful--heading "Key Bindings")
-         (helpful--format-keys helpful--sym aliases)))
-
-      (helpful--insert-section-break)
-
-      (insert
-       (helpful--heading "References")
-       (let ((src-button
-              (when source-path
-                (helpful--navigate-button
-                 (file-name-nondirectory source-path)
-                 source-path
-                 (or pos
-                     0)))))
-         (cond
-          ((and source-path references)
-           (format "References in %s:\n%s"
-                   src-button
-                   (helpful--format-position-heads references source-path)))
-          ((and source-path primitive-p)
-           (format
-            "Finding references in a .%s file is not supported."
-            (file-name-extension source-path)))
-          (source-path
-           (format "%s is unused in %s."
-                   helpful--sym
-                   src-button))
-          ((and primitive-p (null find-function-C-source-directory))
-           "C code is not yet loaded.")
-          (t
-           "Could not find source file.")))
-       "\n\n"
-       (helpful--make-references-button helpful--sym helpful--callable-p))
-
-      (when (and
-             helpful--callable-p
-             (symbolp helpful--sym)
-             source
-             (not primitive-p))
-        (insert
-         " "
-         (helpful--make-callees-button helpful--sym source)))
-
-      (when (helpful--advised-p helpful--sym)
-        (helpful--insert-section-break)
-        (insert
-         (helpful--heading "Advice")
-         (format "This %s is advised."
-                 (if (macrop helpful--sym) "macro" "function"))))
-
-      (let ((can-edebug
-             (helpful--can-edebug-p helpful--sym helpful--callable-p buf pos))
-            (can-trace
-             (and (symbolp helpful--sym)
-                  helpful--callable-p
-                  ;; Tracing uses advice, and you can't apply advice to
-                  ;; primitive functions that are replaced with special
-                  ;; opcodes. For example, `narrow-to-region'.
-                  (not (plist-get (symbol-plist helpful--sym) 'byte-opcode))))
-            (can-disassemble
-             (and helpful--callable-p (not primitive-p)))
-            (can-forget
-             (and (not (special-form-p helpful--sym))
-                  (not primitive-p))))
-        (when (or can-edebug can-trace can-disassemble can-forget)
-          (helpful--insert-section-break)
-          (insert (helpful--heading "Debugging")))
-        (when can-edebug
-          (insert
-           (helpful--make-edebug-button helpful--sym)))
-        (when can-trace
-          (when can-edebug
-            (insert " "))
-          (insert
-           (helpful--make-tracing-button helpful--sym)))
-
-        (when (and
-               (or can-edebug can-trace)
-               (or can-disassemble can-forget))
-          (insert "\n"))
-
-        (when can-disassemble
-          (insert (helpful--make-disassemble-button helpful--sym)))
-
-        (when can-forget
-          (when can-disassemble
-            (insert " "))
-          (insert (helpful--make-forget-button helpful--sym helpful--callable-p))))
-
-      (when aliases
-        (helpful--insert-section-break)
-        (insert
-         (helpful--heading "Aliases")
-         (string-join (mapcar (lambda (it) (helpful--format-alias it helpful--callable-p))
-                              aliases)
-                      "\n")))
-
-      (when helpful--callable-p
-        (helpful--insert-implementations))
-
-      (helpful--insert-section-break)
-
-      (when (or source-path primitive-p)
-        (insert
-         (helpful--heading
-          (if (eq helpful--sym canonical-sym)
-              "Source Code"
-            "Alias Source Code"))
-         (cond
-          (source-path
-           (concat
-            (propertize (format "%s Defined in " (if primitive-p "//" ";;"))
-                        'face 'font-lock-comment-face)
-            (helpful--navigate-button
-             (abbreviate-file-name source-path)
-             source-path
-             pos)
-            "\n"))
-          (primitive-p
-           (concat
-            (propertize
-             "C code is not yet loaded."
-             'face 'font-lock-comment-face)
-            "\n\n"
-            (helpful--button
-             "Set C source directory"
-             'helpful-c-source-directory))))))
-      (when source
-        (insert
-         (cond
-          ((stringp source)
-           (let ((mode (when primitive-p
-                         (pcase (file-name-extension source-path)
-                           ("c" 'c-mode)
-                           ("rs" (when (fboundp 'rust-mode) 'rust-mode))))))
-             (helpful--syntax-highlight source mode)))
-          ((and (consp source) (eq (car source) 'closure))
-           (helpful--syntax-highlight
-            (concat ";; Closure converted to defun by helpful.\n"
-                    (helpful--pretty-print
-                     (helpful--format-closure helpful--sym source)))))
-          (t
-           (helpful--syntax-highlight
-            (concat
-             (if (eq helpful--sym canonical-sym)
-                 ";; Could not find source code, showing raw function object.\n"
-               ";; Could not find alias source code, showing raw function object.\n")
-             (helpful--pretty-print source)))))))
-
-      (helpful--insert-section-break)
-
-      (when-let* ((formatted-props (helpful--format-properties helpful--sym)))
-        (insert
-         (helpful--heading "Symbol Properties")
-         formatted-props))
+      (run-hook-with-args 'helpful-update-functions
+                          helpful--sym
+                          helpful--callable-p
+                          :value val
+                          :primitive-p primitive-p
+                          :associated-buffer helpful--associated-buffer
+                          :buffer buf
+                          :position pos
+                          :opened-p opened
+                          :source source
+                          :source-path source-path
+                          :aliases aliases)
 
       (goto-char (point-min))
       (forward-line (1- start-line))
@@ -3205,6 +2951,314 @@ BACKWARD and LOOKING-AT."
   ;; only recommended in user init files), the function is called each
   ;; time the major mode is used.
   (helpful--add-support-for-org-links))
+
+
+;;
+;;; * Helpful sections
+
+(defun helpful-insert-summary (symbol callable? &rest plist)
+  "Insert a summary for SYMBOL, plus any obsolescence info about it.
+
+For `helpful-update-functionsal'."
+  (insert (helpful--summary
+           symbol callable?
+           (plist-get plist :buffer)
+           (plist-get plist :position)))
+  (when (helpful--obsolete-info symbol callable?)
+    (helpful--insert-section-break)
+    (insert (helpful--format-obsolete-info symbol callable?))))
+
+(defun helpful-insert-signature (symbol callable? &rest _plist)
+  "Insert the signature for SYMBOL if it is callable.
+
+For `helpful-update-functionsal'."
+  (when (and callable? (not (helpful--kbd-macro-p symbol)))
+    (helpful--insert-section-break)
+    (insert (helpful--heading "Signature")
+            (helpful--syntax-highlight (helpful--signature symbol)))))
+
+(cl-defun helpful-insert-values (symbol callable? &key
+                                        value
+                                        position
+                                        associated-buffer
+                                        &allow-other-keys)
+  "Insert the values for SYMBOL, assuming it's not callable.
+
+For `helpful-update-functionsal'."
+  (unless callable?
+    (helpful--insert-section-break)
+    (let ((multiple-views-p
+           (or (stringp value)
+               (keymapp value)
+               (helpful--hook-p symbol value))))
+      (when helpful--first-display
+        (if (stringp value)
+            ;; For strings, it's more intuitive to display them as
+            ;; literals, so "1" and 1 are distinct.
+            (setq helpful--view-literal t)
+          ;; For everything else, prefer the pretty view if available.
+          (setq helpful--view-literal nil)))
+      (insert (helpful--heading
+               (cond
+                ;; Buffer-local variable and we're looking at the value in a specific
+                ;; buffer.
+                ((and associated-buffer (local-variable-p symbol associated-buffer))
+                 (format "Value in %s"
+                         (helpful--button
+                          (format "#<buffer %s>" (buffer-name associated-buffer))
+                          'helpful-buffer-button
+                          'buffer associated-buffer
+                          'position position)))
+                ;; Buffer-local variable but default/global value.
+                ((local-variable-if-set-p symbol) "Global Value")
+                ;; This variable is not buffer-local.
+                (t "Value")))
+              (helpful--format-value symbol value)
+              "\n\n")
+      (when (helpful--original-value-differs-p symbol)
+        (insert (helpful--heading "Original Value")
+                (helpful--format-value
+                 symbol
+                 (car (helpful--original-value symbol)))
+                "\n\n"))
+      (when multiple-views-p
+        (insert (helpful--make-toggle-literal-button) " "))
+      (when (local-variable-if-set-p symbol)
+        (insert (helpful--button
+                 "Buffer values"
+                 'helpful-associated-buffer-button
+                 'symbol symbol
+                 'prompt-p t)
+                " "
+                (helpful--button
+                 "Global value"
+                 'helpful-associated-buffer-button
+                 'symbol symbol
+                 'prompt-p nil)
+                " "))
+      (when (memq (helpful--sym-value symbol associated-buffer) '(nil t))
+        (insert (helpful--make-toggle-button symbol associated-buffer) " "))
+      (insert (helpful--make-set-button symbol associated-buffer))
+      (when (custom-variable-p symbol)
+        (insert " " (helpful--make-customize-button symbol))))))
+
+(defun helpful-insert-docs (symbol callable? &rest _plist)
+  "Insert a docstring, shortdocs, and a manual button for SYMBOL.
+
+For `helpful-update-functions'."
+  (let ((docstring (helpful--docstring symbol callable?))
+        (version-info (helpful--version-info symbol)))
+    (when (or docstring version-info)
+      (helpful--insert-section-break)
+      (insert (helpful--heading "Documentation"))
+      (when docstring
+        (insert (helpful--format-docstring docstring)))
+      (when version-info
+        (insert "\n\n" (string-fill version-info 70)))
+      (when (and (symbolp symbol)
+                 callable?
+                 (helpful--has-shortdoc-p symbol))
+        (insert "\n\n")
+        (insert (helpful--make-shortdoc-sentence symbol)))
+      (when (and (symbolp symbol) (helpful--in-manual-p symbol))
+        (insert "\n\n")
+        (insert (helpful--make-manual-button symbol))))))
+
+;; TODO: allow users to conveniently add and remove keybindings.
+(defun helpful-insert-keybindings (symbol _callable? &rest plist)
+  "Insert a list of keybindings to SYMBOL and corresponding keymaps.
+
+For `helpful-update-functions'."
+  (when (commandp symbol)
+    (helpful--insert-section-break)
+    (insert (helpful--heading "Key Bindings")
+            (helpful--format-keys symbol (plist-get plist :aliases)))))
+
+(cl-defun helpful-insert-references (symbol callable? &key
+                                            position
+                                            primitive-p
+                                            source
+                                            source-path
+                                            &allow-other-keys)
+  "Insert a list of references to SYMBOL.
+
+For `helpful-update-functions'."
+  (let* ((references (helpful--calculate-references
+                      symbol callable? source-path)))
+    (helpful--insert-section-break)
+    (insert (helpful--heading "References")
+            (let ((src-button
+                   (when source-path
+                     (helpful--navigate-button
+                      (file-name-nondirectory source-path)
+                      source-path
+                      (or position 0)))))
+              (cond
+               ((and source-path references)
+                (format "References in %s:\n%s"
+                        src-button
+                        (helpful--format-position-heads references source-path)))
+               ((and source-path primitive-p)
+                (format
+                 "Finding references in a .%s file is not supported."
+                 (file-name-extension source-path)))
+               (source-path
+                (format "%s is unused in %s."
+                        symbol
+                        src-button))
+               ((and primitive-p (null find-function-C-source-directory))
+                "C code is not yet loaded.")
+               (t
+                "Could not find source file.")))
+            "\n\n"
+            (helpful--make-references-button symbol callable?))
+    (when (and callable?
+               (symbolp symbol)
+               source
+               (not primitive-p))
+      (insert " " (helpful--make-callees-button symbol source)))))
+
+(cl-defun helpful-insert-debugging-buttons (symbol callable? &key
+                                                   buffer
+                                                   position
+                                                   primitive-p
+                                                   &allow-other-keys)
+  "TODO"
+  (let ((can-edebug
+         (helpful--can-edebug-p symbol callable? buffer position))
+        (can-trace
+         (and (symbolp symbol)
+              callable?
+              ;; Tracing uses advice, and you can't apply advice to
+              ;; primitive functions that are replaced with special
+              ;; opcodes. For example, `narrow-to-region'.
+              (not (plist-get (symbol-plist symbol) 'byte-opcode))))
+        (can-disassemble
+         (and callable? (not primitive-p)))
+        (can-forget
+         (and (not (special-form-p symbol))
+              (not primitive-p))))
+    (when (or can-edebug can-trace can-disassemble can-forget)
+      (helpful--insert-section-break)
+      (insert (helpful--heading "Debugging")))
+    (when can-edebug
+      (insert (helpful--make-edebug-button symbol)))
+    (when can-trace
+      (when can-edebug
+        (insert " "))
+      (insert (helpful--make-tracing-button symbol)))
+
+    (when (and (or can-edebug can-trace)
+               (or can-disassemble can-forget))
+      (insert "\n"))
+
+    (when can-disassemble
+      (insert (helpful--make-disassemble-button symbol)))
+
+    (when can-forget
+      (when can-disassemble
+        (insert " "))
+      (insert (helpful--make-forget-button symbol callable?)))))
+
+(defun helpful-insert-aliases (_symbol callable? &rest plist)
+  "TODO"
+  (when-let* ((aliases (plist-get plist :aliases)))
+    (helpful--insert-section-break)
+    (insert (helpful--heading "Aliases")
+            (string-join (mapcar (lambda (it) (helpful--format-alias it callable?))
+                                 aliases)
+                         "\n"))))
+
+(defun helpful-insert-implementations (symbol callable? &rest _plist)
+  "TODO"
+  (when callable?
+    (let (content)
+      (when (fboundp #'cl--generic-describe)
+        (with-temp-buffer
+          (declare-function cl--generic-describe "cl-generic" (function))
+          (cl--generic-describe symbol)
+          (goto-char (point-min))
+          (when (re-search-forward "^Implementations:$" nil t)
+            (setq content (buffer-substring (point) (point-max)))))
+        (when content
+          (helpful--insert-section-break)
+          (insert (helpful--heading "Implementations") (string-trim content)))))))
+
+(cl-defun helpful-insert-source-code (symbol callable? &key
+                                             source
+                                             source-path
+                                             primitive-p
+                                             position
+                                             &allow-other-keys)
+  "TODO"
+  (helpful--insert-section-break)
+  (let ((canonical-sym (helpful--canonical-symbol symbol callable?)))
+    (when (or source-path primitive-p)
+      (insert (helpful--heading
+               (if (eq symbol canonical-sym)
+                   "Source Code"
+                 "Alias Source Code"))
+              (cond
+               (source-path
+                (concat
+                 (propertize (format "%s Defined in " (if primitive-p "//" ";;"))
+                             'face 'font-lock-comment-face)
+                 (helpful--navigate-button
+                  (abbreviate-file-name source-path)
+                  source-path
+                  position)
+                 "\n"))
+               (primitive-p
+                (concat
+                 (propertize
+                  "C code is not yet loaded."
+                  'face 'font-lock-comment-face)
+                 "\n\n"
+                 (helpful--button
+                  "Set C source directory"
+                  'helpful-c-source-directory))))))
+    (when source
+      (insert (cond
+               ((stringp source)
+                (helpful--syntax-highlight
+                 source (when primitive-p
+                          (pcase (file-name-extension source-path)
+                            ("c" 'c-mode)
+                            ("rs" (when (fboundp 'rust-mode) 'rust-mode))))))
+               ((and (consp source) (eq (car source) 'closure))
+                (helpful--syntax-highlight
+                 (concat ";; Closure converted to defun by helpful.\n"
+                         (helpful--pretty-print
+                          (helpful--format-closure symbol source)))))
+               (t
+                (helpful--syntax-highlight
+                 (concat
+                  (if (eq symbol canonical-sym)
+                      ";; Could not find source code, showing raw function object.\n"
+                    ";; Could not find alias source code, showing raw function object.\n")
+                  (helpful--pretty-print source)))))))))
+
+(defun helpful-insert-symbol-properties (symbol _callable? &rest _plist)
+  "TODO"
+  (when-let* ((formatted-props (helpful--format-properties symbol)))
+    (helpful--insert-section-break)
+    (insert (helpful--heading "Symbol Properties")
+            formatted-props)))
+
+
+;;; ** Populate `helpful-update-functions'
+
+(add-hook 'helpful-update-functions #'helpful-insert-summary 5)
+(add-hook 'helpful-update-functions #'helpful-insert-signature 10)
+(add-hook 'helpful-update-functions #'helpful-insert-values 10)
+(add-hook 'helpful-update-functions #'helpful-insert-docs 20)
+(add-hook 'helpful-update-functions #'helpful-insert-keybindings 25)
+(add-hook 'helpful-update-functions #'helpful-insert-references 30)
+(add-hook 'helpful-update-functions #'helpful-insert-debugging-buttons 40)
+(add-hook 'helpful-update-functions #'helpful-insert-aliases 60)
+(add-hook 'helpful-update-functions #'helpful-insert-implementations 70)
+(add-hook 'helpful-update-functions #'helpful-insert-source-code 80)
+(add-hook 'helpful-update-functions #'helpful-insert-symbol-properties 90)
 
 (provide 'helpful)
 ;;; helpful.el ends here
