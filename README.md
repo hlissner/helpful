@@ -24,11 +24,10 @@ so:
 ;; Note that the built-in `describe-function' includes both functions
 ;; and macros. `helpful-function' is functions only, so we provide
 ;; `helpful-callable' as a drop-in replacement.
-(global-set-key (kbd "C-h f") #'helpful-callable)
-
-(global-set-key (kbd "C-h v") #'helpful-variable)
-(global-set-key (kbd "C-h k") #'helpful-key)
-(global-set-key (kbd "C-h x") #'helpful-command)
+(global-set-key [remap describe-function] #'helpful-callable)
+(global-set-key [remap describe-command]  #'helpful-command)
+(global-set-key [remap describe-variable] #'helpful-variable)
+(global-set-key [remap describe-key]      #'helpful-key)
 ```
 
 I also recommend the following keybindings to get the most out of
@@ -43,7 +42,7 @@ helpful:
 ;;
 ;; By default, C-h F is bound to `Info-goto-emacs-command-node'. Helpful
 ;; already links to the manual, if a function is referenced there.
-(global-set-key (kbd "C-h F") #'helpful-function)
+(define-key help-map "F" #'helpful-function)
 ```
 
 [Ivy](https://github.com/abo-abo/swiper) users can use Helpful with
