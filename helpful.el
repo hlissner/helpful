@@ -143,8 +143,12 @@ buffer."
   :type 'function)
 
 (defcustom helpful-demos-files
-  (list (expand-file-name "helpful-demos.org" (file-name-directory (or load-file-name buffer-file-name))))
-  "TODO"
+  `(,(expand-file-name
+      "helpful-demos.org" (file-name-directory
+                           (or load-file-name buffer-file-name))))
+  "A list of files to search for demos in.
+
+See helpful-demos.org for details on the format of these org files."
   :type '(repeat file))
 
 ;; TODO: explore whether more basic highlighting is fast enough to
@@ -3183,7 +3187,9 @@ For `helpful-update-functions'."
                                                    position
                                                    primitive-p
                                                    &allow-other-keys)
-  "TODO"
+  "Insert edebug/disassembly buttons for SYMBOL.
+
+For `helpful-update-functions'."
   (let ((can-edebug
          (helpful--can-edebug-p symbol callable? buffer position))
         (can-trace
@@ -3221,7 +3227,9 @@ For `helpful-update-functions'."
       (insert (helpful--make-forget-button symbol callable?)))))
 
 (defun helpful-insert-aliases (_symbol callable? &rest plist)
-  "TODO"
+  "Insert all known aliases for SYMBOL.
+
+For `helpful-update-functions'."
   (when-let* ((aliases (plist-get plist :aliases)))
     (helpful--insert-section-break)
     (insert (helpful--heading "Aliases")
@@ -3230,7 +3238,9 @@ For `helpful-update-functions'."
                          "\n"))))
 
 (defun helpful-insert-implementations (symbol callable? &rest _plist)
-  "TODO"
+  "Insert a list of known implementation sites for SYMBOL.
+
+For `helpful-update-functions'."
   (when callable?
     (let (content)
       (when (fboundp #'cl--generic-describe)
@@ -3250,7 +3260,9 @@ For `helpful-update-functions'."
                                              primitive-p
                                              position
                                              &allow-other-keys)
-  "TODO"
+  "Insert the syntax-highlighted source code for SYMBOL.
+
+For `helpful-update-functions'."
   (helpful--insert-section-break)
   (let ((canonical-sym (helpful--canonical-symbol symbol callable?)))
     (when (or source-path primitive-p)
@@ -3299,7 +3311,9 @@ For `helpful-update-functions'."
                   (helpful--pretty-print source)))))))))
 
 (defun helpful-insert-symbol-properties (symbol _callable? &rest _plist)
-  "TODO"
+  "Inserts a list of all symbol properties associated with SYMBOL.
+
+For `helpful-update-functions'."
   (when-let* ((formatted-props (helpful--format-properties symbol)))
     (helpful--insert-section-break)
     (insert (helpful--heading "Symbol Properties")
