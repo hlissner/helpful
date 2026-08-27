@@ -121,8 +121,7 @@ if there are more than this many.
 
 To disable cleanup entirely, set this variable to nil. See also
 `helpful-kill-buffers' for a one-off cleanup."
-  :type '(choice (const nil) number)
-  :group 'helpful)
+  :type '(choice (const nil) number))
 
 (defcustom helpful-update-functions ()
   "A list of functions executed in helpful buffers to construct the buffer.
@@ -131,25 +130,21 @@ Each is responsible for its own whitespace and heading. Each take four
 arguments: the symbol being looked up, a boolean denoting if the symbol is
 callable, the helpful buffer, and the buffer associated with the helpful
 buffer."
-  :type 'hook
-  :group 'helpful)
+  :type 'hook)
 
 (defcustom helpful-switch-buffer-function
   #'pop-to-buffer
   "Function called to display the *Helpful* buffer."
-  :type 'function
-  :group 'helpful)
+  :type 'function)
 
 (defcustom helpful-set-variable-function
   (if (< 29 emacs-major-version) #'setopt #'setq)
   "Function used by `helpful--set' to interactively set variables."
-  :type 'function
-  :group 'helpful)
+  :type 'function)
 
 (defcustom helpful-demos-files
   (list (expand-file-name "helpful-demos.org" (file-name-directory (or load-file-name buffer-file-name))))
   "TODO"
-  :group 'helpful
   :type '(repeat file))
 
 ;; TODO: explore whether more basic highlighting is fast enough to
