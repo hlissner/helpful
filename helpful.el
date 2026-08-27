@@ -411,6 +411,37 @@ Return SYM otherwise."
       (message "Forgot %s %s." kind sym)
       (kill-buffer (current-buffer)))))
 
+(define-button-type 'helpful-remove-all-advice-button
+  'action #'helpful--remove-all-advice
+  'symbol nil
+  'follow-link t
+  'help-echo "Remove all advices")
+
+(defun helpful--remove-all-advice (button)
+  "Remove all advices on the symbol given by BUTTON."
+  (let ((sym (button-get button 'symbol)))
+    (ad-unadvise sym)
+    (advice-mapc
+     (lambda (advice _when)
+       (advice-remove sym advice))
+     sym)
+    (helpful-update)))
+
+(define-button-type 'helpful-remove-advice-button
+  'action #'helpful--remove-advice
+  'symbol nil
+  'advice nil
+  'face '(error button)
+  'follow-link t
+  'help-echo "Remove this advice")
+
+(defun helpful--remove-advice (button)
+  "Remove an advice on the symbol as specified by BUTTON."
+  (advice-remove
+   (button-get button 'symbol)
+   (button-get button 'advice))
+  (helpful-update))
+
 (define-button-type 'helpful-c-source-directory
   'action #'helpful--c-source-directory
   'follow-link t
@@ -1748,6 +1779,28 @@ without the advice. Assumes function has been loaded."
   (advice--cd*r
    (advice--symbol-function sym)))
 
+(defun helpful--advices (sym)
+  "Return advices of SYM.
+
+Each advice is returned as a list (WHERE FUNC)."
+  (let ((func (advice--symbol-function sym))
+        result)
+    (while (advice--p func)
+      ;; Do not include the activated old style advice
+      (unless (string-prefix-p
+               "ad-Advice"
+               (format "%s" (advice--car func)))
+        (push (list
+               ;; This can also be done with `advice--where', but that
+               ;; isn't available in Emacs 25
+               (if (fboundp 'advice--how)
+                   (advice--how func)
+                 (advice--where func))
+               (advice--car func))
+              result))
+      (setq func (advice--cdr func)))
+    (nreverse result)))
+
 (defun helpful--advised-p (sym)
   "Does SYM have advice associated with it?"
   (and (symbolp sym)
@@ -2328,11 +2381,14 @@ state of the current symbol."
 (defun helpful--skip-advice (docstring)
   "Remove mentions of advice from DOCSTRING."
   (let* ((lines (split-string docstring "\\(\r\n\\|[\n\r]\\)"))
+         (where-types (mapcar (lambda (it) (symbol-name (car it)))
+                              advice--how-alist))
          (relevant-lines
-          (seq-drop-while
+          (seq-remove
            (lambda (it)
-             (or (string-prefix-p ":around advice:" it)
-                 (string-prefix-p "This function has :around advice:" it)))
+             (string-match-p (format (rx bol (opt "This function has ") "%s advice: ")
+                                     (regexp-opt where-types))
+                             it))
            lines)))
     (string-trim (string-join relevant-lines "\n"))))
 
@@ -3061,6 +3117,46 @@ For `helpful-update-functions'."
       (insert "\n\n")
       (insert (helpful--make-manual-button symbol)))))
 
+(defun helpful-insert-advice (symbol callable? &rest _plist)
+  "Insert advice controls for SYMBOL, if applicable.
+
+For `helpful-update-functions'."
+  (when (and callable? (helpful--advised-p symbol))
+    (helpful--insert-section-break)
+    (insert (helpful--heading "Advice")
+            (if-let* ((advices (helpful--advices symbol)))
+                ;; nadvice.el
+                (string-join
+                 (cl-loop for (where func . _) in advices
+                          collect
+                          (format "%s %s %s\n  %s"
+                                  (helpful--button
+                                   "[X]"
+                                   'helpful-remove-advice-button
+                                   'symbol symbol
+                                   'advice func)
+                                  (helpful--propertize-sym-ref
+                                   (format "%s" where)
+                                   "" "")
+                                  (helpful--button
+                                   (if (symbolp func)
+                                       (format "%s" func)
+                                     "#<anonymous-function>")
+                                   'helpful-describe-exactly-button
+                                   'symbol func
+                                   'callable-p t)
+                                  (when-let* ((docstring (helpful--docstring func t)))
+                                    (car (split-string docstring "\n")))))
+                 "\n")
+              ;; old style advice
+              (format "This %s is advised."
+                      (if (macrop symbol) "macro" "function")))
+            "\n\n"
+            (helpful--button
+             "Remove all advices"
+             'helpful-remove-all-advice-button
+             'symbol symbol))))
+
 ;; TODO: allow users to conveniently add and remove keybindings.
 (defun helpful-insert-keybindings (symbol _callable? &rest plist)
   "Insert a list of keybindings to SYMBOL and corresponding keymaps.
@@ -3282,6 +3378,7 @@ For `helpful-update-functions'."
 (add-hook 'helpful-update-functions #'helpful-insert-signature 10)
 (add-hook 'helpful-update-functions #'helpful-insert-values 10)
 (add-hook 'helpful-update-functions #'helpful-insert-docs 20)
+(add-hook 'helpful-update-functions #'helpful-insert-advice 20)
 (add-hook 'helpful-update-functions #'helpful-insert-keybindings 25)
 (add-hook 'helpful-update-functions #'helpful-insert-demos 30)
 (add-hook 'helpful-update-functions #'helpful-insert-aliases 40)
