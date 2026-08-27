@@ -2096,8 +2096,11 @@ OBJ may be a symbol or a compiled function object."
           (and callable-p (helpful--compiled-p sym)))
          (native-compiled-p
           (and callable-p (helpful--native-compiled-p sym)))
+         (advised-p
+          (and callable-p (helpful--advised-p sym)))
          (buttons
           (list
+           (if advised-p "advised")  ; TODO: Make this a button?
            (if alias-p alias-button)
            (if (and callable-p autoloaded-p) autoload-button)
            (if (and callable-p (commandp sym)) interactive-button)
