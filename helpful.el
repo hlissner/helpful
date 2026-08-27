@@ -781,8 +781,10 @@ overrides that to include previously opened buffers."
 
 (defun helpful--manual (button)
   "Open the manual for the system that this BUTTON represents."
-  (let ((sym (button-get button 'symbol)))
-    (info-lookup 'symbol sym #'emacs-lisp-mode)))
+  ;; Don't cause pauses if there are bad entries in $INFOPATH.
+  (cl-letf (((symbol-function #'sit-for) #'ignore))
+    (info-lookup 'symbol (button-get button 'symbol)
+                 #'emacs-lisp-mode)))
 
 (define-button-type 'helpful-describe-button
   'action #'helpful--describe
@@ -1359,7 +1361,9 @@ If the source code cannot be found, return the sexp used."
   "Return non-nil if SYM is in an Info manual."
   (let ((completions
          (cl-letf (((symbol-function #'message)
-                    (lambda (_format-string &rest _args))))
+                    (lambda (message &rest _args) message))
+                   ;; Don't cause pauses if there are bad entries in $INFOPATH.
+                   ((symbol-function #'sit-for) #'ignore))
            (info-lookup->completions 'symbol 'emacs-lisp-mode))))
     (when-let* ((buf (get-buffer " temp-info-look")))
       (kill-buffer buf))
