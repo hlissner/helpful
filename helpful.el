@@ -1361,11 +1361,6 @@ If the source code cannot be found, return the sexp used."
       ;; TODO: offer to download C sources for current version.
       (throw 'source (indirect-function sym)))))
 
-(defun helpful--has-shortdoc-p (sym)
-  "Return non-nil if shortdoc.el is available and SYM is in a shortdoc group."
-  (and (featurep 'shortdoc)
-       (shortdoc-function-groups sym)))
-
 (defun helpful--in-manual-p (sym)
   "Return non-nil if SYM is in an Info manual."
   (let ((completions
@@ -1378,31 +1373,6 @@ If the source code cannot be found, return the sexp used."
       (kill-buffer buf))
     (or (assoc sym completions)
         (assoc-string sym completions))))
-
-(defun helpful--version-info (sym)
-  "If SYM has version information, format and return it.
-Return nil otherwise."
-  (when (symbolp sym)
-    (let ((package-version
-           (get sym 'custom-package-version))
-          (emacs-version
-           (get sym 'custom-version)))
-      (cond
-       (package-version
-        (format
-         "This variable was added, or its default value changed, in %s version %s."
-         (or (car-safe package-version) "unknown")
-         (or (cdr-safe package-version) "unknown")))
-       (emacs-version
-        (format
-         "This variable was added, or its default value changed, in Emacs %s."
-         emacs-version))
-       ((when-let* ((type (if helpful--callable-p 'fun 'var))
-                    (first (or (if (fboundp 'help-fns--first-release-override)
-                                   (help-fns--first-release-override sym type))
-                               (help-fns--first-release sym))))
-          (format "Probably introduced at or before Emacs version %s."
-                  first)))))))
 
 (defun helpful--library-path (library-name)
   "Find the absolute path for the source of LIBRARY-NAME.
@@ -1878,23 +1848,6 @@ POSITION-HEADS takes the form ((123 (defun foo)) (456 (defun bar)))."
            (return-value (mapcar (lambda (it) (helpful--outer-sexp buf it)) positions)))
       (kill-buffer buf)
       return-value)))
-
-(defun helpful--make-shortdoc-sentence (sym)
-  "Make a line for shortdoc groups of SYM."
-  (when (featurep 'shortdoc)
-    (when-let* ((groups (mapcar
-                         (lambda (it)
-                           (helpful--button
-                            (symbol-name it)
-                            'helpful-shortdoc-button
-                            'shortdoc-group it))
-                         (shortdoc-function-groups sym))))
-      (if (= 1 (length groups))
-          (format "Other relevant functions are documented in the %s group."
-                  (car groups))
-        (format "Other relevant functions are documented in the %s groups."
-                (concat (string-join (butlast groups) ", ")
-                        " and " (car (last groups))))))))
 
 (defun helpful--make-manual-button (sym)
   "Make manual button for SYM."
@@ -3087,23 +3040,26 @@ For `helpful-update-functionsal'."
   "Insert a docstring, shortdocs, and a manual button for SYMBOL.
 
 For `helpful-update-functions'."
-  (let ((docstring (helpful--docstring symbol callable?))
-        (version-info (helpful--version-info symbol)))
-    (when (or docstring version-info)
-      (helpful--insert-section-break)
-      (insert (helpful--heading "Documentation"))
-      (when docstring
-        (insert (helpful--format-docstring docstring)))
-      (when version-info
-        (insert "\n\n" (string-fill version-info 70)))
-      (when (and (symbolp symbol)
-                 callable?
-                 (helpful--has-shortdoc-p symbol))
-        (insert "\n\n")
-        (insert (helpful--make-shortdoc-sentence symbol)))
-      (when (and (symbolp symbol) (helpful--in-manual-p symbol))
-        (insert "\n\n")
-        (insert (helpful--make-manual-button symbol))))))
+  (when-let* ((docstring (helpful--docstring symbol callable?)))
+    (helpful--insert-section-break)
+    (insert (helpful--heading "Documentation"))
+    (when docstring
+      (insert (helpful--format-docstring docstring)))
+    (let (notices)
+      (dolist (fn (if callable?
+                      help-fns-describe-function-functions
+                    help-fns-describe-variable-functions))
+        (when-let* ((output (with-temp-buffer
+                              (let ((standard-output (current-buffer)))
+                                (funcall fn symbol))
+                              (string-trim-right (buffer-string))))
+                    ((not (string-empty-p output))))
+          (push output notices)))
+      (when notices
+        (insert "\n\n" (string-join notices "\n"))))
+    (when (and (symbolp symbol) (helpful--in-manual-p symbol))
+      (insert "\n\n")
+      (insert (helpful--make-manual-button symbol)))))
 
 ;; TODO: allow users to conveniently add and remove keybindings.
 (defun helpful-insert-keybindings (symbol _callable? &rest plist)
