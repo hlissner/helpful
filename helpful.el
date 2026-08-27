@@ -1255,14 +1255,15 @@ unescaping too."
   "Follow the URL specified by BUTTON."
   (browse-url (button-get button 'url)))
 
-(defconst helpful--highlighting-funcs
+(defcustom helpful-safe-emacs-lisp-mode-hooks
   '(ert--activate-font-lock-keywords
     highlight-quoted-mode
     rainbow-delimiters-mode)
   "Highlighting functions that are safe to run in a temporary buffer.
 This is used in `helpful--syntax-highlight' to support extra
 highlighting that the user may have configured in their mode
-hooks.")
+hooks."
+  :type '(repeat function))
 
 ;; TODO: crashes on `backtrace-frame' on a recent checkout.
 
@@ -1276,20 +1277,13 @@ hooks.")
       (with-temp-buffer
         (insert source)
 
-        ;; Switch to major-mode MODE, but don't run any hooks.
-        (delay-mode-hooks (funcall mode))
-
-        ;; `delayed-mode-hooks' contains mode hooks like
-        ;; `emacs-lisp-mode-hook'. Build a list of functions that are run
-        ;; when the mode hooks run.
-        (let (hook-funcs)
-          (dolist (hook delayed-mode-hooks)
-            (let ((funcs (symbol-value hook)))
-              (setq hook-funcs (append hook-funcs funcs))))
-
-          ;; Filter hooks to those that relate to highlighting, and run them.
-          (setq hook-funcs (seq-intersection hook-funcs helpful--highlighting-funcs))
-          (mapcar #'funcall hook-funcs))
+        ;; Switch to major-mode MODE, but don't run any hooks or trigger
+        ;; file/dir local variables.
+        (let ((emacs-lisp-mode-hook
+               (seq-intersection emacs-lisp-mode-hook helpful-safe-emacs-lisp-mode-hooks))
+              enable-local-variables
+              enable-dir-local-variables)
+          (funcall mode))
 
         (if (fboundp 'font-lock-ensure)
             (font-lock-ensure)
