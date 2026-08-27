@@ -8,7 +8,7 @@
 ;; URL: https://github.com/hlissner/helpful
 ;; Keywords: help, lisp
 ;; Version: 0.22
-;; Package-Requires: ((emacs "27") (elisp-refs "1.2"))
+;; Package-Requires: ((emacs "27.1") (elisp-refs "1.2"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
